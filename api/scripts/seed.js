@@ -50,12 +50,18 @@ export async function seed(pool) {
   }
 }
 
-// `node scripts/seed.js`: creates the schema if the database is empty, then seeds.
+// `node scripts/seed.js`: creates the schema and the restricted role if the database is empty, then seeds.
+// It needs owner rights, so on a deployed database set OWNER_DATABASE_URL to the owner connection
+// string for this one command; the API itself never gets those rights.
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = new pg.Pool({ connectionString: process.env.OWNER_DATABASE_URL ?? process.env.DATABASE_URL });
   try {
     const { rows } = await pool.query("SELECT to_regclass('public.users') AS users");
-    if (!rows[0].users) await pool.query(readFileSync(new URL("../../db/schema.sql", import.meta.url), "utf8"));
+    if (!rows[0].users) {
+      for (const file of ["schema.sql", "roles.sql"]) {
+        await pool.query(readFileSync(new URL(`../../db/${file}`, import.meta.url), "utf8"));
+      }
+    }
     await seed(pool);
     console.log("Seeded demo users and opening deposits.");
   } finally {

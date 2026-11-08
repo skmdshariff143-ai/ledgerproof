@@ -4,6 +4,7 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 - `api/test/schema.test.js`: database defenses.
 - `api/test/transfer.test.js`: the `transfer()` service.
 - `api/test/auth.test.js`: HTTP authentication, roles, ownership and audit, tested against a running server.
+- `api/test/roles.test.js` and `api/test/proxy.test.js`: the restricted database role and the trusted-proxy setting. Every API test also runs as that restricted role.
 
 ## Authentication, authorization and audit trail
 
@@ -17,6 +18,12 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 | A rogue admin's deposits blend into routine transfers in the audit log | `transfer()` audits each success under the route's own action name (`deposit`, `withdraw`, `transfer`) and target | none | `THREAT hidden deposits` (money.test.js) |
 | Account holder withdraws through the transfer route, skipping the withdrawal rules | Transfer route refuses a vault destination with 400 before calling `transfer()` | `vault_has_no_owner` (the vault can never be an owned account) | `THREAT withdrawal by transfer` |
 | Learning whether someone else's account is frozen by sending an under-funded transfer | `transfer()` checks the source's funds before the destination's status, so both cases answer `INSUFFICIENT_FUNDS` | none | `THREAT frozen-status probe` |
+| A buggy or compromised API edits balances, roles, owners or history with its own SQL | The API connects as `ledgerproof_app`, never as the schema owner | `db/roles.sql`: SELECT everywhere, INSERT on the history tables, `INSERT (account_type, owner_id)` and `UPDATE (status)` on accounts only. No UPDATE, DELETE or TRUNCATE elsewhere, and it is not the table owner, so it cannot disable triggers or change the schema | `THREAT app role cannot tamper` (roles.test.js) |
+| The API role mints money with a trigger of its own on a temp table (found in the Phase 1 security review) | none | A trigger body runs with the caller's rights and the app role may not update balances; the ledger trigger `apply_ledger_entry` is `SECURITY DEFINER` and moves them as the owner | `THREAT temp trigger mint` (roles.test.js) |
+| A session hides an unbalanced transaction from the commit-time check by creating a temp table named `ledger_entries` (found by the security review of the restricted role; it affected any session with temp rights) | none | `check_transaction_balanced` pins `search_path = public, pg_temp`, so a temp table can no longer shadow the real ledger | `THREAT temp table shadow` (roles.test.js) |
+| The deployed API is pointed at the schema owner or a superuser, silently switching off every database protection | On Vercel the app refuses every request unless its role passes `assertRestrictedRole` (not superuser, not table owner, cannot edit balances or users, cannot delete history) | none | `THREAT privileged connection` (roles.test.js) |
+| Supabase's automatic REST API (anon, authenticated, service_role) reads or writes the ledger | none | `db/roles.sql` revokes those roles' access to every table, sequence and function in `public` | `THREAT API roles` (roles.test.js) |
+| A client forges the IP address recorded in the audit log | `trust proxy` is on only behind Vercel (one hop); anywhere else `X-Forwarded-For` is ignored | none | `THREAT forged client IP` (proxy.test.js) |
 | A malicious web page reads API answers from a logged-in user's browser | CORS allow-list from `ALLOWED_ORIGINS`; unset means none; other origins get no `Access-Control-Allow-Origin`. Requests need a bearer token (no cookies), so CORS only controls who can read answers | none | `THREAT cross-origin read`, `THREAT cross-origin preflight` (browser.test.js) |
 | Non-admin lists users, or password hashes leak | `GET /api/users` is admin only and selects no hash column; denials are audited | none | `THREAT user list` (browser.test.js) |
 | Account holder reads the whole ledger | `GET /api/ledger/entries` is admin and auditor only; denials are audited | none | `THREAT ledger explorer` (browser.test.js) |
@@ -73,12 +80,14 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 | Slow balance lookups hold the lock longer as the ledger grows | none | Indexes on `ledger_entries(account_id, id)` and `(transaction_id)` | `THREAT slow lock` (checks the indexes exist, not timing) |
 
 Known gaps:
-- A database superuser can drop the triggers. The app must connect with an INSERT/SELECT-only role (not done yet).
-- The `accounts_guard` balance check trusts `pg_trigger_depth() >= 2`. A session with UPDATE on `accounts` can create its own trigger (for example on a TEMP table) that updates `balance_paise` at depth 2 and mints money with no ledger entry. Found by the security review. Fix: the app connects as a role with only `UPDATE (status)` on `accounts`, and `apply_ledger_entry` runs as `SECURITY DEFINER` (not done yet).
+- The schema owner (used only to load the schema and run the seed) can still drop the triggers. The API connects as `ledgerproof_app`, which cannot.
+- `accounts_guard` still trusts `pg_trigger_depth() >= 2` to recognise the ledger trigger. That is safe only because no role except the schema owner may update balances; `THREAT temp trigger mint` is the test that keeps it so.
 - `transfer()` itself does not check ownership; the HTTP route does. Any new caller of `transfer()` must authorize first.
 - Paying by account number reveals two things to a user who has funds: whether a number exists (404 for unknown) and whether its account is frozen (422 `ACCOUNT_FROZEN`, after the funds check). Account numbers are meant to be shared with payers and a sender needs to learn why a payment failed, so this is accepted rather than hidden. It exposes no balances or owners. Found by the security audit; the owner may choose to return one generic error instead.
 - The browser app keeps the login token in `sessionStorage`, readable by any script on the page. Mitigation: all text goes through React, and the source contains no `dangerouslySetInnerHTML`, `innerHTML` or `eval` (checked by searching `web/src`, not by an automated test). No Content-Security-Policy header is set yet.
 - The browser app has no end-to-end tests; it was checked by hand in a browser for all four roles. Only the money helpers have automated tests.
+- The restricted role stops edits to balances, roles, owners and history, but it must be able to INSERT into the ledger, transactions, idempotency and audit tables. Anyone who could run arbitrary SQL as that role (through an SQL injection or a leaked connection string) could insert forged but balanced ledger rows, audit rows or idempotency keys. All SQL in the API uses bound parameters, and reconcile would still show a ledger that does not match the stored balances, but the role cannot prevent forged inserts by design.
+- A database session can still create temp tables (PUBLIC has that right on every Postgres database). The functions that read tables pin their `search_path` so temp tables cannot shadow them, but queries typed by someone with SQL access to the app role are not protected from that.
 - No rate limit on login yet.
 - Reconcile scans the whole ledger and has no rate limit. Its `problems` list is not capped.
 - No `lock_timeout` or `statement_timeout` is set yet.

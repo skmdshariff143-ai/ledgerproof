@@ -137,7 +137,11 @@ CREATE TRIGGER accounts_guard
 
 -- Each ledger row moves its account's balance and records the result as running_balance_paise.
 -- The UPDATE also fires user_balance_not_negative, so an overdraft fails here.
-CREATE FUNCTION apply_ledger_entry() RETURNS trigger LANGUAGE plpgsql AS $$
+-- SECURITY DEFINER: it runs with the schema owner's rights, so the API's database role needs
+-- no permission to change balances itself (see roles.sql). search_path is pinned so a caller
+-- cannot make the function pick up its own look-alike table.
+CREATE FUNCTION apply_ledger_entry() RETURNS trigger LANGUAGE plpgsql
+  SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
   account_status text;
 BEGIN
@@ -168,7 +172,10 @@ CREATE TRIGGER audit_log_no_truncate
   FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
 
 -- Double entry: checked at COMMIT, so a transaction may insert its rows one by one.
-CREATE FUNCTION check_transaction_balanced() RETURNS trigger LANGUAGE plpgsql AS $$
+-- search_path is pinned with pg_temp last: otherwise a session could create a temp table named
+-- ledger_entries, which would be searched first and make every transaction look balanced.
+CREATE FUNCTION check_transaction_balanced() RETURNS trigger LANGUAGE plpgsql
+  SET search_path = public, pg_temp AS $$
 DECLARE
   debits  bigint;
   credits bigint;

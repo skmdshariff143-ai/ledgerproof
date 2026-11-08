@@ -6,27 +6,55 @@ import pg from "pg";
 import { createApp } from "../src/app.js";
 import { seed } from "../scripts/seed.js";
 
-const url = process.env.TEST_DATABASE_URL;
-const schemaSql = readFileSync(new URL("../../db/schema.sql", import.meta.url), "utf8");
+export const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+const readSql = (file) => readFileSync(new URL(`../../db/${file}`, import.meta.url), "utf8");
+const schemaSql = readSql("schema.sql");
+export const rolesSql = readSql("roles.sql");
 const jwtSecret = randomBytes(32).toString("hex");
 export const ALLOWED_ORIGIN = "http://localhost:5173";
+const APP_ROLE_PASSWORD = "test-only-password";
 let server, baseUrl;
-// Live binding: importers see the pool once before() has created it.
+// Live bindings: importers see the pools once before() has created them.
+// `pool` is the owner connection (wipes, seeds, assertions); `appPool` is the restricted role the API uses.
 export let pool;
+export let appPool;
 
-// Each test gets a fresh schema, the demo seed, and the API on a random local port.
+// These tests wipe the database, so refuse anything not named *_test.
+export function requireTestDatabase() {
+  assert.ok(testDatabaseUrl && new URL(testDatabaseUrl).pathname.endsWith("_test"), "TEST_DATABASE_URL must point to a *_test database");
+}
+
+// Connection string for ledgerproof_app, the role the deployed API connects as.
+export function appDatabaseUrl() {
+  const appUrl = new URL(testDatabaseUrl);
+  appUrl.username = "ledgerproof_app";
+  appUrl.password = APP_ROLE_PASSWORD;
+  return appUrl.toString();
+}
+
+// A fresh schema, then the restricted role, exactly as in a real deployment.
+export async function resetDatabase(admin) {
+  await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.query(schemaSql);
+  await admin.query(rolesSql);
+  await admin.query(`ALTER ROLE ledgerproof_app WITH LOGIN PASSWORD '${APP_ROLE_PASSWORD}'`);
+}
+
+// Each test gets a fresh schema, the demo seed, and the API (as the restricted role) on a random local port.
 export function useSeededServer() {
   before(() => {
-    // These tests wipe the database, so refuse anything not named *_test.
-    assert.ok(url && new URL(url).pathname.endsWith("_test"), "TEST_DATABASE_URL must point to a *_test database");
-    pool = new pg.Pool({ connectionString: url, max: 25 });
+    requireTestDatabase();
+    pool = new pg.Pool({ connectionString: testDatabaseUrl, max: 25 });
+    appPool = new pg.Pool({ connectionString: appDatabaseUrl(), max: 25 });
   });
-  after(() => pool.end());
+  after(async () => {
+    await appPool.end();
+    await pool.end();
+  });
   beforeEach(async () => {
-    await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
-    await pool.query(schemaSql);
+    await resetDatabase(pool);
     await seed(pool);
-    server = createApp(pool, { jwtSecret, allowedOrigins: [ALLOWED_ORIGIN] }).listen(0);
+    server = createApp(appPool, { jwtSecret, allowedOrigins: [ALLOWED_ORIGIN] }).listen(0);
     await new Promise((resolve) => server.once("listening", resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
   });

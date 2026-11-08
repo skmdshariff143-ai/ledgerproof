@@ -70,4 +70,14 @@
 
 **Idempotency is visible in the UI.** Every money form creates a fresh UUID v4 `Idempotency-Key`. "Simulate network retry" sends the request twice with that key at the same moment, so the page shows the server paying once and answering the second call as a replay.
 
+**The API connects as a restricted database role.** `ledgerproof_app` (see `db/roles.sql`) can read the tables, insert into the history tables, open accounts (type and owner only) and change `accounts.status`. It cannot update or delete anything else, cannot update balances, is not the table owner, and cannot disable triggers or alter the schema. So even if the API had an SQL injection or a bug, the database would still refuse to forge a balance, change a role or rewrite history. The schema owner is used only to load the schema and run the seed. Every API test runs as this role, so what the tests prove is what the deployment gets.
+
+**The ledger trigger runs as the owner.** Balances must change when a ledger row is inserted, but the API role may not change them. `apply_ledger_entry` is `SECURITY DEFINER` with a pinned `search_path`, so the trigger does the update with the owner's rights while a trigger written by the API role (which runs with its own rights) fails. This closes the gap where a session could mint money with a trigger on a temp table.
+
+**Supabase's REST API gets no access.** Supabase exposes every table in `public` to its anon, authenticated and service roles by default. `roles.sql` revokes that, because the ledger is reached only through this API.
+
+**Behind Vercel, trust one proxy hop; elsewhere none.** Audit rows record the client address, so the API must know the real one. On Vercel `X-Forwarded-For` is set by the platform, so Express trusts that single hop. Anywhere else the header is ignored, so a client cannot choose the address that is written to the audit log.
+
+**The API exports an app; a small file listens.** `src/index.js` builds and exports the Express app (what Vercel runs). `src/local.js` only calls `listen` for `npm start`. The database pool is small (5) and logs idle-connection errors instead of crashing the instance.
+
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.

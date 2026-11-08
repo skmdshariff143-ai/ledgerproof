@@ -31,10 +31,16 @@ async function findAccount(db, id) {
 // `allowedOrigins` are the browser origins that may read responses (CORS). Empty means none.
 // Requests carry a bearer token, not cookies, so CORS is not what protects the data: the
 // token is. CORS only decides which web pages may read the answers.
-export function createApp(pool, { jwtSecret, allowedOrigins = [] }) {
+export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = false, ready = Promise.resolve() }) {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", trustProxy);
   app.use(cors({ origin: allowedOrigins, exposedHeaders: ["Idempotent-Replayed"] }));
+  // `ready` rejects when startup checks fail (see role-check.js); every request then fails closed with a 500.
+  app.use(async (req, res, next) => {
+    await ready;
+    next();
+  });
   app.use(express.json({ limit: "10kb" }));
 
   // Deny by default: every route except login must name the roles allowed to call it.
