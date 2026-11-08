@@ -68,3 +68,14 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** A new test file `threats.test.js` reads THREATS.md and fails if a test it names does not exist, or if a `THREAT` test is not listed. Its first run failed on exactly those two tests, plus the new deadlock test. All three are now documented in THREATS.md.
 - **How verified:** The failing run showed the three missing titles; after the fix, 71/71 pass on three consecutive runs. A mutation check on the new deadlock test (locking accounts in request order instead of ascending id) made it fail with Postgres `deadlock detected`, so the stress test does catch the bug it exists for.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/4a0c4f0
+
+## 2026-11-09: Pay-by-account-number leaked which accounts exist, and CORS accepted "null" (authorization / information leak)
+
+- **Asked:** Phase 6: let account holders pay each other by account number from the browser app, and let the browser read API answers (CORS) from a configured origin.
+- **What the AI produced:** The transfer route looked up the recipient number first and validated the amount and idempotency key afterwards. `server.js` split `ALLOWED_ORIGINS` on commas and trusted every entry.
+- **What was wrong (found by the `security-auditor` subagent, both confirmed by probes):**
+  1. A malformed request (for example `amountPaise: "x"`) to a known number returned 400 and to an unknown number returned 404. Account numbers are sequential (`LP` plus 10 digits), so any account holder could count every live account without moving money.
+  2. The value `null` in `ALLOWED_ORIGINS` was echoed back as an allowed origin, so sandboxed iframes and local files could read API answers. `*` and a trailing slash passed silently too (they allowed nothing, which would have been a confusing failure).
+- **What was done instead:** The amount and idempotency key are validated before the number is looked up, so both cases now get the same 400. `parseAllowedOrigins` refuses anything that is not an exact origin, so the server does not start on a bad value. A third finding, that a funded user paying by number can see whether a recipient is frozen, was not changed: it is documented as an accepted tradeoff in THREATS.md and DECISIONS.md, and it is yours to overrule.
+- **How verified:** New tests `THREAT account number probe` and `THREAT origin config`, written to fail on the old behavior; 80/80 API tests pass, plus 32 web tests. I did not re-run the old code to watch those two tests fail.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/e2013b4
