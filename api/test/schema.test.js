@@ -99,9 +99,9 @@ test("THREAT double payment: the same idempotency key cannot be used twice", asy
   const [a, b] = await newAccounts();
   const t1 = await postEntries([[a, "debit", 500], [b, "credit", 500]]);
   const t2 = await postEntries([[a, "debit", 500], [b, "credit", 500]]);
-  await db.query("INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ('k1', 'h', $1)", [t1]);
+  await db.query("INSERT INTO idempotency_keys (user_id, key, request_hash, transaction_id) VALUES ((SELECT id FROM users LIMIT 1), 'k1', 'h', $1)", [t1]);
   await assert.rejects(
-    db.query("INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ('k1', 'h', $1)", [t2]),
+    db.query("INSERT INTO idempotency_keys (user_id, key, request_hash, transaction_id) VALUES ((SELECT id FROM users LIMIT 1), 'k1', 'h', $1)", [t2]),
     /duplicate key/,
   );
 });
@@ -109,7 +109,7 @@ test("THREAT double payment: the same idempotency key cannot be used twice", asy
 test("THREAT tampering: idempotency keys and transactions are append-only", async () => {
   const [a, b] = await newAccounts();
   const t = await postEntries([[a, "debit", 500], [b, "credit", 500]]);
-  await db.query("INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ('k1', 'h', $1)", [t]);
+  await db.query("INSERT INTO idempotency_keys (user_id, key, request_hash, transaction_id) VALUES ((SELECT id FROM users LIMIT 1), 'k1', 'h', $1)", [t]);
   await assert.rejects(db.query("DELETE FROM idempotency_keys"), /append-only/);
   await assert.rejects(db.query("UPDATE transactions SET created_at = now()"), /append-only/);
   await assert.rejects(db.query("DELETE FROM transactions"), /append-only/);

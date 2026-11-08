@@ -10,7 +10,7 @@ Money movement with a ledger you can prove. Solo submission for the Snovasys Fre
 - **The database refuses overdrafts.** `accounts.balance_paise` is kept by a trigger on every ledger insert, and a `CHECK` refuses any user balance below zero. The balance cannot be edited directly.
 - **Append-only history.** `ledger_entries`, `transactions`, `idempotency_keys` and `audit_log` reject UPDATE, DELETE and TRUNCATE.
 - **No deadlocks between opposite transfers.** A transfer locks both accounts in ascending id order before reading the balance.
-- **The same request never pays twice.** The idempotency key is a primary key written in the same transaction as the money movement.
+- **The same request never pays twice.** Each user's `Idempotency-Key` is a primary key written in the same transaction as the money movement. A retry gets the same 201 answer with an `Idempotent-Replayed: true` header.
 - **Authorization.** The JWT carries only the user id. The role is read fresh from the database on every request. Every route names the roles allowed to call it, and account holders can touch only accounts they own. Denied and failed attempts are written to `audit_log` in their own transaction, so a rollback cannot erase them.
 
 Details: [DECISIONS.md](DECISIONS.md) explains each integrity decision. [THREATS.md](THREATS.md) maps each threat to its defenses and the test that proves it. [PROMPTS.md](PROMPTS.md) records how AI was used and where it was wrong.
@@ -39,7 +39,7 @@ npm run seed
 npm start
 ```
 
-The API listens on `http://localhost:3000`. The seed creates the schema when the database is empty. Running it twice does not pay the opening deposits twice.
+The API listens on `http://localhost:3000`. The seed creates the schema when the database is empty. Running it twice does not pay the opening deposits twice. There are no migrations yet: after pulling a schema change, recreate the local database (`docker compose exec db dropdb -U ledger ledgerproof`, then `createdb` and `npm run seed` again).
 
 ## API
 
@@ -76,10 +76,10 @@ Built and tested:
 - Ledger schema and its database-level guards.
 - Deposits, withdrawals and transfers between accounts.
 - The reconciliation endpoint.
+- Per-user idempotency keys with exact replay.
 - Login, role checks, ownership checks and the audit trail.
 
 Not built yet:
-- Per-user idempotency keys.
 - The frontend.
 - Deployment.
 

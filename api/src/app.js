@@ -91,35 +91,41 @@ export function createApp(pool, { jwtSecret }) {
   const moveMoney = (req, from, to, amountPaise) =>
     transfer(pool, { actor: req.user, ip: req.ip, from, to, amountPaise, idempotencyKey: req.get("Idempotency-Key") });
 
-  const sendResult = (res, result) => res.status(result.replayed ? 200 : 201).json(result);
-
-  route("post", "/api/transactions/transfer", ["account_holder"], async (req, res) => {
-    const { fromAccountId, toAccountId, amountPaise } = req.body ?? {};
-    sendResult(res, await audited(req, "transfer", `account:${fromAccountId}`, async () => {
-      await requireOwnAccount(req, fromAccountId, "transfer");
-      // Paying the vault is a withdrawal; it must go through the withdrawal route, not this one.
-      if (UUID.test(toAccountId ?? "") && (await findAccount(pool, toAccountId))?.account_type === "system_vault") {
-        throw fail("INVALID_INPUT", "transfers must go to a user account");
+  // Every money route is audited and idempotent. A replay answers exactly like the first
+  // call (201, same body); only the Idempotent-Replayed header and its own audit row differ.
+  function moneyRoute(path, roles, action, targetAccountOf, work) {
+    route("post", path, roles, async (req, res) => {
+      const body = req.body ?? {};
+      const target = `account:${targetAccountOf(body)}`;
+      const result = await audited(req, action, target, () => work(req, body));
+      if (result.replayed) {
+        // The payment already committed; a failing audit write must not turn that into a 500.
+        await audit(pool, { actor: req.user, action, target, ip: req.ip, details: { transactionId: result.transactionId, replayed: true }, outcome: "success" })
+          .catch((auditErr) => console.error("audit write failed", auditErr));
+        res.set("Idempotent-Replayed", "true");
       }
-      return moveMoney(req, fromAccountId, toAccountId, amountPaise);
-    }));
+      res.status(201).json({ transactionId: result.transactionId });
+    });
+  }
+
+  moneyRoute("/api/transactions/transfer", ["account_holder"], "transfer", (b) => b.fromAccountId, async (req, b) => {
+    await requireOwnAccount(req, b.fromAccountId, "transfer");
+    // Paying the vault is a withdrawal; it must go through the withdrawal route, not this one.
+    if (UUID.test(b.toAccountId ?? "") && (await findAccount(pool, b.toAccountId))?.account_type === "system_vault") {
+      throw fail("INVALID_INPUT", "transfers must go to a user account");
+    }
+    return moveMoney(req, b.fromAccountId, b.toAccountId, b.amountPaise);
   });
 
   // Deposits are money entering the system, so only an admin can create them; the vault pays.
-  route("post", "/api/transactions/deposit", ["admin"], async (req, res) => {
-    const { toAccountId, amountPaise } = req.body ?? {};
-    sendResult(res, await audited(req, "deposit", `account:${toAccountId}`, async () => {
-      requireUuid(toAccountId, "toAccountId");
-      return moveMoney(req, await vaultId(), toAccountId, amountPaise);
-    }));
+  moneyRoute("/api/transactions/deposit", ["admin"], "deposit", (b) => b.toAccountId, async (req, b) => {
+    requireUuid(b.toAccountId, "toAccountId");
+    return moveMoney(req, await vaultId(), b.toAccountId, b.amountPaise);
   });
 
-  route("post", "/api/transactions/withdraw", ["account_holder"], async (req, res) => {
-    const { fromAccountId, amountPaise } = req.body ?? {};
-    sendResult(res, await audited(req, "withdraw", `account:${fromAccountId}`, async () => {
-      await requireOwnAccount(req, fromAccountId, "withdraw");
-      return moveMoney(req, fromAccountId, await vaultId(), amountPaise);
-    }));
+  moneyRoute("/api/transactions/withdraw", ["account_holder"], "withdraw", (b) => b.fromAccountId, async (req, b) => {
+    await requireOwnAccount(req, b.fromAccountId, "withdraw");
+    return moveMoney(req, b.fromAccountId, await vaultId(), b.amountPaise);
   });
 
   route("get", "/api/ledger/reconcile", ["admin", "auditor"], async (req, res) => {

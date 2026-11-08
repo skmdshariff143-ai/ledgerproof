@@ -53,11 +53,14 @@ CREATE INDEX ledger_entries_account_id_idx ON ledger_entries (account_id, id);
 CREATE INDEX ledger_entries_transaction_id_idx ON ledger_entries (transaction_id);
 
 -- One row per accepted request key. The primary key is what stops a second payment.
+-- Keys belong to the user who sent them, so one user cannot claim or probe another's keys.
 CREATE TABLE idempotency_keys (
-  key            text PRIMARY KEY,
+  user_id        uuid NOT NULL REFERENCES users (id),
+  key            text NOT NULL,
   request_hash   text NOT NULL,
   transaction_id uuid NOT NULL REFERENCES transactions (id),
-  created_at     timestamptz NOT NULL DEFAULT now()
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, key)
 );
 
 -- actor_role is copied at the time of the event, so a later role change cannot rewrite history.

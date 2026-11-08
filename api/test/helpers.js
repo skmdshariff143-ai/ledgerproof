@@ -42,7 +42,7 @@ export async function call(method, path, { token, body, headers = {} } = {}) {
     },
     body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
   });
-  return { status: res.status, body: await res.json() };
+  return { status: res.status, headers: res.headers, body: await res.json() };
 }
 
 const PASSWORDS = {

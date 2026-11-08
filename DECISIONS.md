@@ -12,7 +12,13 @@
 
 **Idempotency key is written last.** The request is only recorded as done in the same transaction that moves the money. If two identical requests race, the loser fails on the key insert, rolls back, and returns the winner's result.
 
-**Same key, different request is an error.** The request is hashed (from, to, amount); a mismatch is rejected rather than replayed, so a key cannot be reused to pay someone else.
+**Same key, different request is an error.** The request is hashed (user, from, to, amount); a mismatch is rejected with 409 rather than replayed, so a key cannot be reused to pay someone else. The operation needs no separate field: a deposit always has the vault as source, a withdrawal always has it as destination, and a transfer never involves it, so from and to already tell them apart.
+
+**Idempotency keys belong to a user.** The primary key is `(user_id, key)`, and `user_id` comes from the verified token. One user cannot block another by sending their key first, and cannot learn whether a key was used.
+
+**No IN_PROGRESS rows.** A common design writes an "in progress" row first and returns 409 to a duplicate that arrives meanwhile. Here the key row is written in the same transaction as the money, so a duplicate waits on the lock and then gets the real result instead of a 409. If the server crashes mid-request, the whole transaction rolls back and no stuck "in progress" row is left that would need cleaning by hand.
+
+**A replay looks exactly like the first answer.** It returns the same status (201) and body (`{ transactionId }`), and only the `Idempotent-Replayed: true` header marks it. Each replay is audited too, so the audit log shows every request, not just the first. Failed requests (such as 422 for insufficient funds) are not stored, so a retry runs again and can succeed once the money is there. A replay is checked after authorization but before the frozen check: it reports a payment that already happened and moves nothing, so it still answers 201 after the account is frozen, while any new payment is refused.
 
 **Overdraft is refused twice: by the app and by the database.** `accounts.balance_paise` caches credits minus debits, and `CHECK user_balance_not_negative` refuses any user balance below zero, so even a bug in `transfer()` or a hand-written SQL insert cannot overdraw. `transfer()` still checks first, after the lock, so callers get a clean `INSUFFICIENT_FUNDS` instead of a constraint error.
 

@@ -15,15 +15,16 @@ function validate({ actor, from, to, amountPaise, idempotencyKey }) {
   if (from === to) throw fail("INVALID_INPUT", "from and to must differ");
 }
 
-// Same key + same payload must give the same hash; a different payload must not.
-function hashRequest({ from, to, amountPaise }) {
-  return createHash("sha256").update(JSON.stringify([from, to, amountPaise])).digest("hex");
+// Same user + key + payload must give the same hash; a different payload must not.
+// The operation (deposit, withdraw, transfer) is fixed by which side is the vault, so from/to cover it.
+function hashRequest({ actor, from, to, amountPaise }) {
+  return createHash("sha256").update(JSON.stringify([actor.id, from, to, amountPaise])).digest("hex");
 }
 
-async function findExisting(client, key, requestHash) {
+async function findExisting(client, { actor, idempotencyKey }, requestHash) {
   const { rows } = await client.query(
-    "SELECT request_hash, transaction_id FROM idempotency_keys WHERE key = $1",
-    [key],
+    "SELECT request_hash, transaction_id FROM idempotency_keys WHERE user_id = $1 AND key = $2",
+    [actor.id, idempotencyKey],
   );
   if (rows.length === 0) return null;
   if (rows[0].request_hash !== requestHash) throw fail("IDEMPOTENCY_CONFLICT", "idempotency key was used with a different request");
@@ -58,7 +59,7 @@ function transactionType(source, destination) {
 async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }, requestHash) {
   const { source, destination } = await lockAccounts(client, from, to, amountPaise);
   // A parallel request with the same key may have committed while we waited for the lock.
-  const earlier = await findExisting(client, idempotencyKey, requestHash);
+  const earlier = await findExisting(client, { actor, idempotencyKey }, requestHash);
   if (earlier) return earlier;
   if (source.status !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
   // Funds are checked before the destination's status, so an under-funded request cannot
@@ -79,8 +80,8 @@ async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }
   );
   // The key row is the last write, so a losing concurrent request fails here and rolls back everything.
   await client.query(
-    "INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ($1, $2, $3)",
-    [idempotencyKey, requestHash, transactionId],
+    "INSERT INTO idempotency_keys (user_id, key, request_hash, transaction_id) VALUES ($1, $2, $3, $4)",
+    [actor.id, idempotencyKey, requestHash, transactionId],
   );
   // Same action and target names the HTTP routes use for denials and failures,
   // so an auditor filtering by "deposit" sees successes and failures alike.
@@ -115,7 +116,7 @@ export async function transfer(pool, request) {
   const client = await pool.connect();
   let broken = false;
   try {
-    const earlier = await findExisting(client, request.idempotencyKey, requestHash);
+    const earlier = await findExisting(client, request, requestHash);
     if (earlier) return earlier;
     await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
     try {
@@ -126,7 +127,7 @@ export async function transfer(pool, request) {
       broken = !(await rollback(client));
       if (err.code !== UNIQUE_VIOLATION) throw err;
       // Another request with this key committed first: return its result.
-      const winner = await findExisting(client, request.idempotencyKey, requestHash);
+      const winner = await findExisting(client, request, requestHash);
       if (!winner) throw err;
       return winner;
     }

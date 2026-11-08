@@ -69,7 +69,8 @@ test("THREAT replayed deposit and withdrawal: the same key moves money once", as
   const alice = await accountOf("alice@ledgerline.com");
   const first = await deposit(admin, alice.id, 10_000, "dep-retry");
   const again = await deposit(admin, alice.id, 10_000, "dep-retry");
-  assert.equal(again.status, 200);
+  assert.equal(again.status, 201);
+  assert.equal(again.headers.get("idempotent-replayed"), "true");
   assert.equal(again.body.transactionId, first.body.transactionId);
   const token = await tokenFor("alice");
   await withdraw(token, alice.id, 5_000, "wd-retry");
