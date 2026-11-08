@@ -9,6 +9,7 @@ import { seed } from "../scripts/seed.js";
 const url = process.env.TEST_DATABASE_URL;
 const schemaSql = readFileSync(new URL("../../db/schema.sql", import.meta.url), "utf8");
 const jwtSecret = randomBytes(32).toString("hex");
+export const ALLOWED_ORIGIN = "http://localhost:5173";
 let server, baseUrl;
 // Live binding: importers see the pool once before() has created it.
 export let pool;
@@ -25,7 +26,7 @@ export function useSeededServer() {
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
     await pool.query(schemaSql);
     await seed(pool);
-    server = createApp(pool, { jwtSecret }).listen(0);
+    server = createApp(pool, { jwtSecret, allowedOrigins: [ALLOWED_ORIGIN] }).listen(0);
     await new Promise((resolve) => server.once("listening", resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
   });
@@ -42,7 +43,8 @@ export async function call(method, path, { token, body, headers = {} } = {}) {
     },
     body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
   });
-  return { status: res.status, headers: res.headers, body: await res.json() };
+  const text = await res.text();
+  return { status: res.status, headers: res.headers, body: text ? JSON.parse(text) : null };
 }
 
 const PASSWORDS = {

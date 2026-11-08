@@ -1,9 +1,10 @@
+import cors from "cors";
 import express from "express";
 import { audit } from "./audit.js";
 import { allowRoles, authenticate, deny, login } from "./auth.js";
 import { inTransaction } from "./db.js";
 import { fail, HTTP_STATUS, UUID } from "./errors.js";
-import { transfer } from "./transfer.js";
+import { transfer, validateAmountAndKey } from "./transfer.js";
 
 const ALL_ROLES = ["admin", "account_holder", "auditor"];
 const ACCOUNT_COLUMNS = "id, account_number, account_type, owner_id, status, balance_paise::text AS balance_paise, created_at";
@@ -12,14 +13,28 @@ function requireUuid(value, name) {
   if (typeof value !== "string" || !UUID.test(value)) throw fail("INVALID_INPUT", `${name} must be a lowercase UUID`);
 }
 
+// Account numbers are meant to be shared with whoever pays you, so an unknown one is a plain 404.
+async function accountIdByNumber(pool, number) {
+  if (typeof number !== "string" || !/^[A-Z0-9-]{1,32}$/.test(number)) {
+    throw fail("INVALID_INPUT", "toAccountNumber is not a valid account number");
+  }
+  const { rows } = await pool.query("SELECT id FROM accounts WHERE account_number = $1", [number]);
+  if (rows.length === 0) throw fail("ACCOUNT_NOT_FOUND", "account not found");
+  return rows[0].id;
+}
+
 async function findAccount(db, id) {
   const { rows } = await db.query(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = $1`, [id]);
   return rows[0] ?? null;
 }
 
-export function createApp(pool, { jwtSecret }) {
+// `allowedOrigins` are the browser origins that may read responses (CORS). Empty means none.
+// Requests carry a bearer token, not cookies, so CORS is not what protects the data: the
+// token is. CORS only decides which web pages may read the answers.
+export function createApp(pool, { jwtSecret, allowedOrigins = [] }) {
   const app = express();
   app.disable("x-powered-by");
+  app.use(cors({ origin: allowedOrigins, exposedHeaders: ["Idempotent-Replayed"] }));
   app.use(express.json({ limit: "10kb" }));
 
   // Deny by default: every route except login must name the roles allowed to call it.
@@ -110,11 +125,19 @@ export function createApp(pool, { jwtSecret }) {
 
   moneyRoute("/api/transactions/transfer", ["account_holder"], "transfer", (b) => b.fromAccountId, async (req, b) => {
     await requireOwnAccount(req, b.fromAccountId, "transfer");
+    if (b.toAccountNumber !== undefined && b.toAccountId !== undefined) {
+      throw fail("INVALID_INPUT", "send toAccountId or toAccountNumber, not both");
+    }
+    let toAccountId = b.toAccountId;
+    if (b.toAccountNumber !== undefined) {
+      validateAmountAndKey({ amountPaise: b.amountPaise, idempotencyKey: req.get("Idempotency-Key") });
+      toAccountId = await accountIdByNumber(pool, b.toAccountNumber);
+    }
     // Paying the vault is a withdrawal; it must go through the withdrawal route, not this one.
-    if (UUID.test(b.toAccountId ?? "") && (await findAccount(pool, b.toAccountId))?.account_type === "system_vault") {
+    if (UUID.test(toAccountId ?? "") && (await findAccount(pool, toAccountId))?.account_type === "system_vault") {
       throw fail("INVALID_INPUT", "transfers must go to a user account");
     }
-    return moveMoney(req, b.fromAccountId, b.toAccountId, b.amountPaise);
+    return moveMoney(req, b.fromAccountId, toAccountId, b.amountPaise);
   });
 
   // Deposits are money entering the system, so only an admin can create them; the vault pays.
@@ -206,6 +229,29 @@ export function createApp(pool, { jwtSecret }) {
       res.json({ account });
     });
   }
+
+  // Password hashes are never selected.
+  route("get", "/api/users", ["admin"], async (req, res) => {
+    const { rows } = await pool.query("SELECT id, email, role, created_at FROM users ORDER BY created_at, email");
+    await audit(pool, { actor: req.user, action: "read_users", ip: req.ip, outcome: "success" });
+    res.json({ users: rows });
+  });
+
+  // The double-entry ledger itself: every row is one side of a transaction.
+  route("get", "/api/ledger/entries", ["admin", "auditor"], async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.transaction_id, t.type, a.account_number, e.direction,
+              e.amount_paise::text AS amount_paise, e.running_balance_paise::text AS running_balance_paise,
+              u.email AS initiated_by, e.created_at
+         FROM ledger_entries e
+         JOIN transactions t ON t.id = e.transaction_id
+         JOIN accounts a ON a.id = e.account_id
+         JOIN users u ON u.id = t.initiated_by
+        ORDER BY e.id DESC LIMIT 200`,
+    );
+    await audit(pool, { actor: req.user, action: "read_ledger", ip: req.ip, outcome: "success" });
+    res.json({ entries: rows });
+  });
 
   route("get", "/api/audit-logs", ["admin", "auditor"], async (req, res) => {
     const { rows } = await pool.query(

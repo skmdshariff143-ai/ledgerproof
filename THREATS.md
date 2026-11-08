@@ -17,6 +17,12 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 | A rogue admin's deposits blend into routine transfers in the audit log | `transfer()` audits each success under the route's own action name (`deposit`, `withdraw`, `transfer`) and target | none | `THREAT hidden deposits` (money.test.js) |
 | Account holder withdraws through the transfer route, skipping the withdrawal rules | Transfer route refuses a vault destination with 400 before calling `transfer()` | `vault_has_no_owner` (the vault can never be an owned account) | `THREAT withdrawal by transfer` |
 | Learning whether someone else's account is frozen by sending an under-funded transfer | `transfer()` checks the source's funds before the destination's status, so both cases answer `INSUFFICIENT_FUNDS` | none | `THREAT frozen-status probe` |
+| A malicious web page reads API answers from a logged-in user's browser | CORS allow-list from `ALLOWED_ORIGINS`; unset means none; other origins get no `Access-Control-Allow-Origin`. Requests need a bearer token (no cookies), so CORS only controls who can read answers | none | `THREAT cross-origin read`, `THREAT cross-origin preflight` (browser.test.js) |
+| Non-admin lists users, or password hashes leak | `GET /api/users` is admin only and selects no hash column; denials are audited | none | `THREAT user list` (browser.test.js) |
+| Account holder reads the whole ledger | `GET /api/ledger/entries` is admin and auditor only; denials are audited | none | `THREAT ledger explorer` (browser.test.js) |
+| Paying by account number bypasses the ownership check, reaches the vault, or injects SQL | Source ownership is checked before the number is resolved; vault destination refused; number must match `^[A-Z0-9-]{1,32}$` and is a bound parameter; sending both id and number is 400 | none | `THREAT transfer by account number` (browser.test.js) |
+| A typo in `ALLOWED_ORIGINS` (`null`, `*`, trailing slash) silently changes who can read answers | `parseAllowedOrigins` refuses anything that is not an exact origin, so the server does not start | none | `THREAT origin config` (origins.test.js) |
+| Counting live account numbers with malformed requests | Amount and idempotency key are validated before the number is looked up, so a known and an unknown number get the same 400 | none | `THREAT account number probe` (browser.test.js) |
 | Auditor writes (transfer, create, freeze) | `allowRoles`: auditor is named on no write route; 403 plus a `denied` audit row | none | `THREAT auditor writes` |
 | Admin spends from a user's account | Transfer route allows `account_holder` only | none | `THREAT admin forging` |
 | No token, token signed with another secret, `alg: none` | `jwt.verify` with `algorithms: ['HS256']`; 401 | none | `THREAT no or forged token` |
@@ -69,6 +75,7 @@ Known gaps:
 - A database superuser can drop the triggers. The app must connect with an INSERT/SELECT-only role (not done yet).
 - The `accounts_guard` balance check trusts `pg_trigger_depth() >= 2`. A session with UPDATE on `accounts` can create its own trigger (for example on a TEMP table) that updates `balance_paise` at depth 2 and mints money with no ledger entry. Found by the security review. Fix: the app connects as a role with only `UPDATE (status)` on `accounts`, and `apply_ledger_entry` runs as `SECURITY DEFINER` (not done yet).
 - `transfer()` itself does not check ownership; the HTTP route does. Any new caller of `transfer()` must authorize first.
+- Paying by account number reveals two things to a user who has funds: whether a number exists (404 for unknown) and whether its account is frozen (422 `ACCOUNT_FROZEN`, after the funds check). Account numbers are meant to be shared with payers and a sender needs to learn why a payment failed, so this is accepted rather than hidden. It exposes no balances or owners. Found by the security audit; the owner may choose to return one generic error instead.
 - No rate limit on login yet.
 - Reconcile scans the whole ledger and has no rate limit. Its `problems` list is not capped.
 - No `lock_timeout` or `statement_timeout` is set yet.

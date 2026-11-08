@@ -58,4 +58,8 @@
 
 **Reconcile recomputes, it does not trust.** `GET /api/ledger/reconcile` sums the ledger rows itself and compares the result with the stored balances and the last running balances. It also lists any transaction whose debits and credits differ, and any user account below zero. All checks read one `REPEATABLE READ READ ONLY` snapshot, so transfers committing during the check cannot cause false alarms. Its job is to catch what the triggers cannot stop, such as a superuser editing a balance with triggers switched off.
 
+**Paying by account number.** A transfer may name the recipient by account number (`LP0000000002`) instead of the UUID, so people can pay each other without knowing internal ids. The source account's ownership is checked first, and the number is only a bound parameter after a strict pattern check. The amount and idempotency key are validated before the lookup so malformed requests cannot be used to find which numbers exist. A real payment still shows whether a number exists or is frozen; that is accepted because account numbers are public by design and the sender must learn why a payment failed.
+
+**CORS is a reader allow-list, not the lock.** `ALLOWED_ORIGINS` lists the browser pages allowed to read API answers; empty means none. Requests are authenticated by a bearer token in a header, not by cookies, so a foreign page cannot ride on a logged-in session, and CORS only stops it reading answers. The setting is parsed strictly at startup: `null`, `*`, trailing slashes and paths stop the server, so a typo cannot quietly widen or break access.
+
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.

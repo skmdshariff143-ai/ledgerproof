@@ -5,13 +5,18 @@ import { fail, UUID } from "./errors.js";
 const UNIQUE_VIOLATION = "23505";
 const MAX_KEY_LENGTH = 200;
 
-function validate({ actor, from, to, amountPaise, idempotencyKey }) {
-  if (!UUID.test(actor?.id ?? "")) throw fail("INVALID_INPUT", "actor is required");
+// Checked before any account lookup, so malformed requests tell a caller nothing about which accounts exist.
+export function validateAmountAndKey({ amountPaise, idempotencyKey }) {
   if (typeof idempotencyKey !== "string" || idempotencyKey === "" || idempotencyKey.length > MAX_KEY_LENGTH) {
     throw fail("INVALID_INPUT", `idempotencyKey is required, at most ${MAX_KEY_LENGTH} characters`);
   }
-  if (!UUID.test(from) || !UUID.test(to)) throw fail("INVALID_INPUT", "account ids must be lowercase UUIDs");
   if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) throw fail("INVALID_INPUT", "amountPaise must be a positive integer");
+}
+
+function validate({ actor, from, to, amountPaise, idempotencyKey }) {
+  if (!UUID.test(actor?.id ?? "")) throw fail("INVALID_INPUT", "actor is required");
+  validateAmountAndKey({ amountPaise, idempotencyKey });
+  if (!UUID.test(from) || !UUID.test(to)) throw fail("INVALID_INPUT", "account ids must be lowercase UUIDs");
   if (from === to) throw fail("INVALID_INPUT", "from and to must differ");
 }
 
