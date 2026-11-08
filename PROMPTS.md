@@ -79,3 +79,7 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** The amount and idempotency key are validated before the number is looked up, so both cases now get the same 400. `parseAllowedOrigins` refuses anything that is not an exact origin, so the server does not start on a bad value. A third finding, that a funded user paying by number can see whether a recipient is frozen, was not changed: it is documented as an accepted tradeoff in THREATS.md and DECISIONS.md, and it is yours to overrule.
 - **How verified:** New tests `THREAT account number probe` and `THREAT origin config`, written to fail on the old behavior; 80/80 API tests pass, plus 32 web tests. I did not re-run the old code to watch those two tests fail.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/e2013b4
+
+
+> **Rules note (2026-11-09, not an AI-use entry):**
+> Updated `CLAUDE.md` on 2026-11-08/09 to remove the `Co-Authored-By` trailer requirement and enforce manual `git push` after earlier commits (5 of the first 19) included the trailer.

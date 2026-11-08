@@ -1,46 +1,31 @@
-# LedgerProof — project rules for Claude Code
+# LedgerProof
 
 @AGENTS.md
 
-## Who I am and what this is
-Solo submission by Shareef for the Snovasys Fresher Hiring Challenge 2026 (VVIT), problem "LedgerLine".
-Deadline: Thu 12 Nov 2026, 6:00 PM IST. Goal: money moves so the books always balance and the same request never pays twice.
+Solo Snovasys LedgerLine submission, due Thu 12 Nov 2026, 6:00 PM IST.
 
-## Company rules (non-negotiable — breaking these gets me rejected)
-1. Individual work only. Never copy code from other candidates, tutorials, or repositories found online. Write original code.
-2. The repository stays PRIVATE until the deadline. Never run any command that changes repo visibility.
-3. Never fake history: no force-push, no amend/rebase of pushed commits, no back-dated commits, no squashing history.
-4. Never claim a feature works unless its test passes. README/THREATS/docs must describe only code that exists. Unfinished work is listed honestly in README "Status".
-5. AI use is allowed and must be visible: every AI-assisted commit carries a Co-Authored-By trailer. Never hide it.
-6. Never attack, scan, or send traffic to Snovasys systems or any other candidate's deployment. Attack scripts target ONLY my own deployment URL from env.
-7. No harmful content in the repo. No secrets in git (.env is ignored; only .env.example is committed).
-8. I must be able to explain and modify every line, especially authorization. Keep code simple and readable; no clever abstractions; explain every integrity decision in DECISIONS.md.
+## Company rules (non-negotiable)
+1. Original individual work only; never copy others' code, tutorials or repos.
+2. Repo stays PRIVATE until the deadline; never change visibility.
+3. No faked history: no force-push, amending/rebasing pushed commits, back-dating or squashing.
+4. A feature works only if its test passes; docs describe only existing code; unfinished work goes in README "Status".
+5. AI use is disclosed in README and PROMPTS.md. No Co-Authored-By or "Generated with Claude Code" in commits.
+6. Never scan or send traffic to Snovasys or other candidates; attack scripts hit only my own deployment URL (env).
+7. No secrets in git (only .env.example); no harmful content.
+8. I must explain every line (especially authz): simple code; log integrity decisions in DECISIONS.md.
 
-## Required files (graded)
-- PROMPTS.md — ≥ 5 dated entries, ≥ 2 about authorization / access control / audit trail. Each: what was asked, what the AI produced, what was wrong, what was done instead, how verified, commit link. Written AS WE GO, never back-filled.
-- THREATS.md — every threat mapped to the API defense, DB defense, and the exact test that proves it.
-- DECISIONS.md — one short paragraph per integrity decision.
-- README.md — live links, demo logins per role, run locally in ≤ 6 commands, tests, honest Status section.
+## Stack
+Express + `pg` (raw parameterised SQL, no ORM) in `/api`; React + Vite in `/web`. Money = integer paise. Graded: README (live links, demo logins, honest Status), THREATS, DECISIONS, PROMPTS (≥5 dated entries, ≥2 on authz/audit).
 
-## Grading to optimise for (100)
-35 integrity & security of the DEPLOYED system · 15 threat thinking (THREATS.md + tests) · 15 functionality · 15 AI use (PROMPTS.md) · 10 code quality · 10 docs/deploy/demo.
-Working integrity beats screen count.
+## After each completed unit of work
+1. `npm test` in `/api`; fix failures first. Never commit red tests (a deliberate one: "test: failing test for <threat>").
+2. Run the `security-reviewer` subagent on the diff if it touches auth, money, idempotency, audit or SQL.
+3. `git add` only this unit's files.
+4. Commit `feat|fix|test|docs|chore|ci(scope): what changed`, no trailer.
+5. Do not push: print `git push origin main` (plain push) for me to run, and wait.
+6. Print the commit SHA and https://github.com/skmdshariff143-ai/ledgerproof/commit/<sha>.
+7. Tell me: files changed, each integrity decision and the threat it blocks, what to check by hand.
 
-## Git workflow — commit and push every update
-After EVERY completed unit of work (one feature, one fix, one doc update):
-1. Run `npm test` in /api. If anything fails, fix it first. Never commit red tests (exception: a commit that intentionally adds a failing test before its fix must say "test: failing test for <threat>").
-2. Run the `security-reviewer` subagent on the diff if it touches auth, money, idempotency, audit, or SQL.
-3. `git add` only the files for this unit (never `git add -A` blindly; check `git status`). Never commit .env, node_modules, or secrets.
-4. Commit with a conventional message: `feat|fix|test|docs|chore|ci(scope): what changed` and the trailer:
-   Co-Authored-By: Claude <noreply@anthropic.com>
-5. `git push origin main` (plain push only).
-6. Print the commit SHA and URL https://github.com/skmdshariff143-ai/ledgerproof/commit/<sha> so I can link it in PROMPTS.md.
-7. Stop and give me: files changed, integrity decisions + threat each blocks, what I must check by hand.
+When I correct you or a test exposes your mistake, draft a PROMPTS.md entry, show it, and commit it as `docs(prompts): <topic>` after I confirm. Never invent mistakes.
 
-## PROMPTS.md logging
-Whenever I correct you, a subagent catches a real bug in your code, or a test you wrote exposes your own mistake: draft a PROMPTS.md entry with today's date and the commit link, show it to me, and commit it separately as `docs(prompts): <topic>` after I confirm it is accurate. Never invent or stage mistakes.
-
-## Working style
-- Do only the step I ask for. Don't add features. Ask when unsure instead of guessing.
-- Use context7 for library docs before using any API you're not certain of.
-- Prefer small diffs. Raw parameterised SQL with `pg`. Money = integer paise.
+Do only the step asked; ask when unsure.

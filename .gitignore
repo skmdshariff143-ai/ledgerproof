@@ -3,3 +3,8 @@ node_modules/
 .claude-flow/
 .swarm/
 dist/
+
+# Claude Code / Ruflo local state
+.claude/proven-config.json
+.claude/.proven-config-version
+.claude/settings.local.json
