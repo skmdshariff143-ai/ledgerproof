@@ -132,3 +132,36 @@ test("opposite-direction parallel transfers do not deadlock", async () => {
   await Promise.all(jobs);
   assert.equal((await balance(alice)) + (await balance(bob)), 2000);
 });
+
+test("THREAT retry race: parallel same-key requests on an exactly-sufficient balance all succeed or replay", async () => {
+  await fund(alice, 100, "fund-1");
+  const req = { actor: "u1", from: alice, to: bob, amountPaise: 100, idempotencyKey: "t-1" };
+  const results = await Promise.all(Array.from({ length: 10 }, () => transfer(pool, req)));
+  assert.equal(new Set(results.map((r) => r.transactionId)).size, 1);
+  assert.equal(await balance(bob), 100);
+});
+
+test("THREAT isolation: overdraft is still blocked when the database default is REPEATABLE READ", async () => {
+  const rr = new pg.Pool({ connectionString: url, max: 10 });
+  rr.on("connect", (c) => c.query("SET default_transaction_isolation = 'repeatable read'"));
+  try {
+    await fund(alice, 1000, "fund-1");
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, (_, i) =>
+        transfer(rr, { actor: "u1", from: alice, to: bob, amountPaise: 300, idempotencyKey: `t-${i}` }),
+      ),
+    );
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 3);
+    assert.equal(await balance(alice), 100);
+  } finally {
+    await rr.end();
+  }
+});
+
+test("THREAT malformed ids: bad UUIDs and case variants are rejected without leaking database errors", async () => {
+  await fund(alice, 1000, "fund-1");
+  const base = { actor: "u1", from: alice, to: bob, amountPaise: 100, idempotencyKey: "k" };
+  await assert.rejects(transfer(pool, { ...base, to: "not-a-uuid" }), { code: "INVALID_INPUT" });
+  await assert.rejects(transfer(pool, { ...base, to: alice.toUpperCase() }), { code: "INVALID_INPUT" });
+  await assert.rejects(transfer(pool, { ...base, idempotencyKey: "x".repeat(201) }), { code: "INVALID_INPUT" });
+});

@@ -1,8 +1,10 @@
--- LedgerProof schema. Money is integer paise. Ledger and audit tables are append-only.
+-- LedgerProof schema. Money is integer paise. Ledger, transaction, idempotency and audit tables are append-only.
 
 CREATE TABLE accounts (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name       text NOT NULL,
+  -- Only system accounts (e.g. a treasury that funds others) may go below zero.
+  allow_negative boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -19,6 +21,10 @@ CREATE TABLE ledger_entries (
   amount_paise   bigint NOT NULL CHECK (amount_paise > 0),
   created_at     timestamptz NOT NULL DEFAULT now()
 );
+
+-- Balance lookups and the commit-time balance check read by these columns.
+CREATE INDEX ledger_entries_account_id_idx ON ledger_entries (account_id);
+CREATE INDEX ledger_entries_transaction_id_idx ON ledger_entries (transaction_id);
 
 -- One row per accepted request key. The primary key is what stops a second payment.
 CREATE TABLE idempotency_keys (
@@ -49,6 +55,34 @@ CREATE TRIGGER ledger_entries_append_only
 CREATE TRIGGER ledger_entries_no_truncate
   BEFORE TRUNCATE ON ledger_entries
   FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
+
+CREATE TRIGGER transactions_append_only
+  BEFORE UPDATE OR DELETE ON transactions
+  FOR EACH ROW EXECUTE FUNCTION reject_change();
+CREATE TRIGGER transactions_no_truncate
+  BEFORE TRUNCATE ON transactions
+  FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
+
+CREATE TRIGGER idempotency_keys_append_only
+  BEFORE UPDATE OR DELETE ON idempotency_keys
+  FOR EACH ROW EXECUTE FUNCTION reject_change();
+CREATE TRIGGER idempotency_keys_no_truncate
+  BEFORE TRUNCATE ON idempotency_keys
+  FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
+
+-- allow_negative switches off the overdraft check, so it can never change after creation.
+CREATE FUNCTION reject_allow_negative_change() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.allow_negative IS DISTINCT FROM OLD.allow_negative THEN
+    RAISE EXCEPTION 'accounts.allow_negative cannot be changed';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER accounts_allow_negative_fixed
+  BEFORE UPDATE ON accounts
+  FOR EACH ROW EXECUTE FUNCTION reject_allow_negative_change();
 
 CREATE TRIGGER audit_log_append_only
   BEFORE UPDATE OR DELETE ON audit_log

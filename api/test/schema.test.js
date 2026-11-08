@@ -89,3 +89,20 @@ test("THREAT double payment: the same idempotency key cannot be used twice", asy
     /duplicate key/,
   );
 });
+
+test("THREAT tampering: accounts cannot turn on allow_negative; idempotency keys and transactions are append-only", async () => {
+  const [a, b] = await newAccounts();
+  const t = await postEntries([[a, "debit", 500], [b, "credit", 500]]);
+  await db.query("INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ('k1', 'h', $1)", [t]);
+  await assert.rejects(db.query("UPDATE accounts SET allow_negative = true"), /allow_negative/);
+  await assert.rejects(db.query("DELETE FROM idempotency_keys"), /append-only/);
+  await assert.rejects(db.query("UPDATE transactions SET created_at = now()"), /append-only/);
+  await assert.rejects(db.query("DELETE FROM transactions"), /append-only/);
+});
+
+test("THREAT slow lock: ledger_entries is indexed by account_id and transaction_id", async () => {
+  const { rows } = await db.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'ledger_entries'");
+  const defs = rows.map((r) => r.indexdef).join("\n");
+  assert.match(defs, /\(account_id\)/);
+  assert.match(defs, /\(transaction_id\)/);
+});
