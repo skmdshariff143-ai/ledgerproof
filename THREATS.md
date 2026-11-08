@@ -23,6 +23,7 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 | Paying by account number bypasses the ownership check, reaches the vault, or injects SQL | Source ownership is checked before the number is resolved; vault destination refused; number must match `^[A-Z0-9-]{1,32}$` and is a bound parameter; sending both id and number is 400 | none | `THREAT transfer by account number` (browser.test.js) |
 | A typo in `ALLOWED_ORIGINS` (`null`, `*`, trailing slash) silently changes who can read answers | `parseAllowedOrigins` refuses anything that is not an exact origin, so the server does not start | none | `THREAT origin config` (origins.test.js) |
 | Counting live account numbers with malformed requests | Amount and idempotency key are validated before the number is looked up, so a known and an unknown number get the same 400 | none | `THREAT account number probe` (browser.test.js) |
+| A browser rounds money or sends a fractional, negative or non-numeric amount | The web app parses amounts to integer paise without floats (checked in `web/src/money.test.js`, 32 cases, run with `npm test` in `web`) and the API rejects bad amounts again | `CHECK (amount_paise > 0)` | `THREAT overdraft withdrawal and bad amounts` (money.test.js) |
 | Auditor writes (transfer, create, freeze) | `allowRoles`: auditor is named on no write route; 403 plus a `denied` audit row | none | `THREAT auditor writes` |
 | Admin spends from a user's account | Transfer route allows `account_holder` only | none | `THREAT admin forging` |
 | No token, token signed with another secret, `alg: none` | `jwt.verify` with `algorithms: ['HS256']`; 401 | none | `THREAT no or forged token` |
@@ -76,6 +77,8 @@ Known gaps:
 - The `accounts_guard` balance check trusts `pg_trigger_depth() >= 2`. A session with UPDATE on `accounts` can create its own trigger (for example on a TEMP table) that updates `balance_paise` at depth 2 and mints money with no ledger entry. Found by the security review. Fix: the app connects as a role with only `UPDATE (status)` on `accounts`, and `apply_ledger_entry` runs as `SECURITY DEFINER` (not done yet).
 - `transfer()` itself does not check ownership; the HTTP route does. Any new caller of `transfer()` must authorize first.
 - Paying by account number reveals two things to a user who has funds: whether a number exists (404 for unknown) and whether its account is frozen (422 `ACCOUNT_FROZEN`, after the funds check). Account numbers are meant to be shared with payers and a sender needs to learn why a payment failed, so this is accepted rather than hidden. It exposes no balances or owners. Found by the security audit; the owner may choose to return one generic error instead.
+- The browser app keeps the login token in `sessionStorage`, readable by any script on the page. Mitigation: all text goes through React, and the source contains no `dangerouslySetInnerHTML`, `innerHTML` or `eval` (checked by searching `web/src`, not by an automated test). No Content-Security-Policy header is set yet.
+- The browser app has no end-to-end tests; it was checked by hand in a browser for all four roles. Only the money helpers have automated tests.
 - No rate limit on login yet.
 - Reconcile scans the whole ledger and has no rate limit. Its `problems` list is not capped.
 - No `lock_timeout` or `statement_timeout` is set yet.

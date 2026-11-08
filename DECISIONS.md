@@ -62,4 +62,12 @@
 
 **CORS is a reader allow-list, not the lock.** `ALLOWED_ORIGINS` lists the browser pages allowed to read API answers; empty means none. Requests are authenticated by a bearer token in a header, not by cookies, so a foreign page cannot ride on a logged-in session, and CORS only stops it reading answers. The setting is parsed strictly at startup: `null`, `*`, trailing slashes and paths stop the server, so a typo cannot quietly widen or break access.
 
+**The browser never uses floats for money.** `web/src/money.js` turns what a person types ("100.50") into integer paise with string maths and BigInt, and formats paise back to rupees the same way. It refuses zero, negatives, more than two decimals, exponents and commas. The API sends money as strings, so a large balance is never squeezed through a JavaScript number. The server validates the amount again; the browser check only saves a round trip.
+
+**The browser app is a client, not a gatekeeper.** Each role sees a different screen, but that is convenience. Every request is checked by the server from the verified token, so opening another role's screen (or calling its URLs by hand) gets a 403 and an audit row.
+
+**The login token lives in sessionStorage.** It disappears when the tab closes and is sent as a bearer header, so there are no cookies to forge a request with. The price is that any script running on the page could read it. The defense is that the app renders all text through React (no `dangerouslySetInnerHTML`, `innerHTML` or `eval`), so data from the API cannot become script. A strict Content-Security-Policy would add a second layer and is not set yet.
+
+**Idempotency is visible in the UI.** Every money form creates a fresh UUID v4 `Idempotency-Key`. "Simulate network retry" sends the request twice with that key at the same moment, so the page shows the server paying once and answering the second call as a replay.
+
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.
