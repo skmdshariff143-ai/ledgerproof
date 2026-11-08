@@ -41,3 +41,12 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** The audit write's own failure is logged with `console.error`, and the original error is still returned.
 - **How verified:** Test `a failing audit write does not hide the original error` makes every new `audit_log` row fail (`CHECK (false) NOT VALID`) and asserts the response is still `422 INSUFFICIENT_FUNDS`.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/249c0bf
+
+## 2026-11-08: Deposits were logged as ordinary transfers (audit trail)
+
+- **Asked:** Phase 3: admin-only deposits, own-account withdrawals and a reconciliation endpoint, all reusing `transfer()`.
+- **What the AI produced:** The new routes reused `transfer()` unchanged. Its success audit row was still hard-coded as `action: "transfer"`, with `target` set to the source account.
+- **What was wrong (found by the `security-reviewer` subagent):** Every successful deposit was logged as a "transfer" from the vault. Failed deposits were logged as "deposit" by the route. An auditor filtering for `deposit` saw only the failures, so a rogue admin creating money would have blended into routine transfers. The reviewer also found that reconcile missed a transaction with no ledger rows, because it grouped only the rows that existed.
+- **What was done instead:** `transfer()` now takes the audit action and target from the transaction type (`deposit`, `withdraw`, `transfer`), matching the names the routes use for denials and failures. Reconcile now starts from `transactions`, so an empty one is reported.
+- **How verified:** New tests `THREAT hidden deposits` (one admin deposit adds exactly one `success`/`deposit` row, targeting the credited account) and `reconcile reports a transaction that has no ledger rows`. 58/58 tests pass.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/a79b4a6
