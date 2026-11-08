@@ -12,6 +12,8 @@ END
 $$;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+-- Postgres lets everyone execute new functions. These are trigger functions, run only by their triggers.
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO ledgerproof_app;
 
 -- Read what the routes read; write only what they write. There is no UPDATE, DELETE or TRUNCATE

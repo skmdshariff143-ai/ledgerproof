@@ -78,7 +78,7 @@ CREATE TABLE audit_log (
 );
 
 -- Append-only: block UPDATE, DELETE and TRUNCATE on history tables.
-CREATE FUNCTION reject_change() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION reject_change() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END;
@@ -107,7 +107,7 @@ CREATE TRIGGER idempotency_keys_no_truncate
 
 -- Accounts open empty, are never deleted, never change type, owner or number, and their
 -- balance moves only through ledger_entries_apply (which runs at trigger depth 2).
-CREATE FUNCTION guard_account() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION guard_account() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'accounts cannot be deleted';

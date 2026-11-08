@@ -122,6 +122,8 @@ test("THREAT API roles: Supabase's anon, authenticated and service_role lose acc
     );
     assert.deepEqual(rows[0], { can_read: false, can_write: false }, `anon must have no access to ${table}`);
   }
+  // Postgres lets everyone run new functions; the security-definer ledger trigger must not be open to the API roles.
+  assert.equal((await owner.query("SELECT has_function_privilege('anon', 'apply_ledger_entry()', 'EXECUTE') AS can")).rows[0].can, false);
   // A table added later (a future migration) must not come with the access Supabase grants by default.
   await owner.query("CREATE TABLE added_later (a int)");
   assert.equal((await owner.query("SELECT has_table_privilege('anon', 'added_later', 'SELECT') AS can")).rows[0].can, false);
