@@ -30,4 +30,22 @@
 
 **Isolation is pinned to READ COMMITTED.** The balance read must see the latest committed rows after the lock is granted. Under REPEATABLE READ the snapshot would predate the wait and could miss another spend.
 
+**The token holds only the user id.** The JWT is signed and checked with HS256 only, which also rejects `alg: none`. On every request `authenticate` looks the user up again, so a changed role or a deleted user takes effect at once. A role kept in the token would keep working until the token expired.
+
+**Deny by default.** Every route except login is registered through `route(method, path, roles, handler)`, which always runs `authenticate` and `allowRoles`. A route cannot be added without naming who may call it. Auditors are named on no write route, so every POST they send is refused.
+
+**Ownership is checked against the database, never the request.** The transfer route loads the source account and compares `owner_id` with the logged-in user. This check can run before the money transaction because `owner_id` can never change (`accounts_guard`). The vault has no owner, so no account holder can name it as the source.
+
+**403 for missing and foreign accounts alike.** An account holder asking for an account that does not exist gets the same 403 as for someone else's account, so account ids cannot be probed.
+
+**Admins manage, they do not spend.** Admins can create, freeze and unfreeze user accounts, but the transfer route is for account holders only, so an admin cannot move money out of a user's account.
+
+**Denials and failures are audited outside the request's transaction.** `deny()` and the `audited` helper write through the pool, which commits on its own, so the record survives when the request's transaction rolls back. A success is audited with the request's own client, so it commits together with the change it describes, or not at all.
+
+**Audit rows keep the role at the time.** `audit_log.actor_role` is copied when the row is written, so a later role change does not alter what the history says.
+
+**Passwords use scrypt from Node's standard library.** Each password gets a random salt, comparison runs in constant time, and an unknown email is checked against a dummy hash so it takes as long as a wrong password.
+
+**The seed is idempotent.** The opening deposits use fixed idempotency keys, so running `npm run seed` twice replays them instead of paying twice.
+
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.

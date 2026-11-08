@@ -10,9 +10,11 @@ CREATE TABLE users (
 
 -- balance_paise is a cache of SUM(credits) - SUM(debits) kept by the ledger trigger below;
 -- it lets the database itself refuse an overdraft.
+CREATE SEQUENCE account_number_seq;
+
 CREATE TABLE accounts (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_number text NOT NULL UNIQUE,
+  account_number text NOT NULL UNIQUE DEFAULT 'LP' || lpad(nextval('account_number_seq')::text, 10, '0'),
   account_type   text NOT NULL CHECK (account_type IN ('system_vault', 'user_checking')),
   owner_id       uuid REFERENCES users (id),
   status         text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'frozen')),
@@ -29,8 +31,9 @@ INSERT INTO accounts (account_number, account_type) VALUES ('VAULT-0001', 'syste
 
 CREATE TABLE transactions (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  type       text NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
-  created_at timestamptz NOT NULL DEFAULT now()
+  type         text NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
+  initiated_by uuid NOT NULL REFERENCES users (id),
+  created_at   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE ledger_entries (
@@ -56,12 +59,18 @@ CREATE TABLE idempotency_keys (
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 
+-- actor_role is copied at the time of the event, so a later role change cannot rewrite history.
+-- actor_user_id is NULL only for anonymous events such as a failed login.
 CREATE TABLE audit_log (
-  id         bigserial PRIMARY KEY,
-  actor      text NOT NULL,
-  action     text NOT NULL,
-  details    jsonb,
-  created_at timestamptz NOT NULL DEFAULT now()
+  id            bigserial PRIMARY KEY,
+  actor_user_id uuid REFERENCES users (id),
+  actor_role    text,
+  action        text NOT NULL,
+  target        text,
+  ip            text,
+  details       jsonb,
+  outcome       text NOT NULL CHECK (outcome IN ('success', 'denied', 'error')),
+  created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 -- Append-only: block UPDATE, DELETE and TRUNCATE on history tables.

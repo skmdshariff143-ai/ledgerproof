@@ -1,8 +1,27 @@
 # THREATS
 
-Only threats with a passing test are listed. The HTTP API does not exist yet; "API defense" below means the `transfer()` function in `api/src/transfer.js`.
+Only threats with a passing test are listed. Tests named `THREAT ...` live in:
+- `api/test/schema.test.js`: database defenses.
+- `api/test/transfer.test.js`: the `transfer()` service.
+- `api/test/auth.test.js`: HTTP authentication, roles, ownership and audit, tested against a running server.
 
-Tests named `THREAT ...` live in `api/test/schema.test.js` (DB defenses) and `api/test/transfer.test.js` (`transfer()` defenses).
+## Authentication, authorization and audit trail
+
+| Threat | API defense | DB defense | Test (auth.test.js) |
+|---|---|---|---|
+| Alice moves money out of Bob's account (IDOR) | Transfer route compares the source account's `owner_id` with the logged-in user; 403 plus a `denied` audit row | `owner_id` immutable (`accounts_guard`) | `THREAT IDOR transfer` |
+| Alice reads Bob's statement, or probes which account ids exist | Statement route checks ownership; a missing account gets the same 403 as a foreign one; both audited | none | `THREAT IDOR statement` |
+| Account holder mints money by naming the vault as the source | Vault has no owner, so the ownership check refuses it | `vault_has_no_owner` | `THREAT vault minting` |
+| Auditor writes (transfer, create, freeze) | `allowRoles`: auditor is named on no write route; 403 plus a `denied` audit row | none | `THREAT auditor writes` |
+| Admin spends from a user's account | Transfer route allows `account_holder` only | none | `THREAT admin forging` |
+| No token, token signed with another secret, `alg: none` | `jwt.verify` with `algorithms: ['HS256']`; 401 | none | `THREAT no or forged token` |
+| Old token keeps a role that was taken away | Role is read from `users` on every request; the token holds only the user id | none | `THREAT stale role` |
+| Password guessing goes unnoticed | Failed logins return 401 and are audited as `denied` | none | `THREAT bad login` |
+| A rollback erases the record of a failed attempt | Denials and failures are audited through the pool, in their own transaction | none | `admin freezes Bob ... audited outside the rolled-back transaction` |
+| Audit trail edited or deleted | none | Triggers block UPDATE, DELETE, TRUNCATE on `audit_log`; `outcome` limited by CHECK | `THREAT tampering: audit log` (schema.test.js) |
+| Errors leak SQL or stack traces | Error handler returns only `{ error: { code, message } }`; unknown errors become a generic 500 | none | `THREAT error leaks` |
+
+## Ledger and money movement
 
 | Threat | API defense | DB defense | Test |
 |---|---|---|---|
@@ -32,6 +51,7 @@ Tests named `THREAT ...` live in `api/test/schema.test.js` (DB defenses) and `ap
 Known gaps:
 - A database superuser can drop the triggers. The app must connect with an INSERT/SELECT-only role (not done yet).
 - The `accounts_guard` balance check trusts `pg_trigger_depth() >= 2`. A session with UPDATE on `accounts` can create its own trigger (for example on a TEMP table) that updates `balance_paise` at depth 2 and mints money with no ledger entry. Found by the security review. Fix: the app connects as a role with only `UPDATE (status)` on `accounts`, and `apply_ledger_entry` runs as `SECURITY DEFINER` (not done yet).
-- `transfer()` has no caller identity yet, so any caller can name the vault as `from` and mint a deposit. Authorization comes with the HTTP API.
+- `transfer()` itself does not check ownership; the HTTP route does. Any new caller of `transfer()` must authorize first.
+- No rate limit on login yet.
 - Idempotency keys are global, not per user. They become per user when authentication is added.
 - No `lock_timeout` or `statement_timeout` is set yet.

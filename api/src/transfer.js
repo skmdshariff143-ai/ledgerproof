@@ -1,15 +1,12 @@
 import { createHash } from "node:crypto";
+import { audit } from "./audit.js";
+import { fail, UUID } from "./errors.js";
 
 const UNIQUE_VIOLATION = "23505";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_KEY_LENGTH = 200;
 
-function fail(code, message) {
-  return Object.assign(new Error(message), { code });
-}
-
 function validate({ actor, from, to, amountPaise, idempotencyKey }) {
-  if (typeof actor !== "string" || actor === "") throw fail("INVALID_INPUT", "actor is required");
+  if (!UUID.test(actor?.id ?? "")) throw fail("INVALID_INPUT", "actor is required");
   if (typeof idempotencyKey !== "string" || idempotencyKey === "" || idempotencyKey.length > MAX_KEY_LENGTH) {
     throw fail("INVALID_INPUT", `idempotencyKey is required, at most ${MAX_KEY_LENGTH} characters`);
   }
@@ -58,20 +55,21 @@ function transactionType(source, destination) {
   return "transfer";
 }
 
-async function post(client, { actor, from, to, amountPaise, idempotencyKey }, requestHash) {
+async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }, requestHash) {
   const { source, destination } = await lockAccounts(client, from, to, amountPaise);
   // A parallel request with the same key may have committed while we waited for the lock.
   const earlier = await findExisting(client, idempotencyKey, requestHash);
   if (earlier) return earlier;
-  if (source.status !== "active" || destination.status !== "active") {
-    throw fail("ACCOUNT_FROZEN", "account is frozen");
-  }
+  if (source.status !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
+  // Funds are checked before the destination's status, so an under-funded request cannot
+  // be used to learn whether someone else's account is frozen.
   if (source.account_type !== "system_vault" && !source.has_funds) {
     throw fail("INSUFFICIENT_FUNDS", "insufficient funds");
   }
+  if (destination.status !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
   const tx = await client.query(
-    "INSERT INTO transactions (type) VALUES ($1) RETURNING id",
-    [transactionType(source, destination)],
+    "INSERT INTO transactions (type, initiated_by) VALUES ($1, $2) RETURNING id",
+    [transactionType(source, destination), actor.id],
   );
   const transactionId = tx.rows[0].id;
   await client.query(
@@ -84,10 +82,14 @@ async function post(client, { actor, from, to, amountPaise, idempotencyKey }, re
     "INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ($1, $2, $3)",
     [idempotencyKey, requestHash, transactionId],
   );
-  await client.query(
-    "INSERT INTO audit_log (actor, action, details) VALUES ($1, 'transfer', $2)",
-    [actor, JSON.stringify({ transactionId, from, to, amountPaise, idempotencyKey })],
-  );
+  await audit(client, {
+    actor,
+    action: "transfer",
+    target: `account:${from}`,
+    ip,
+    details: { transactionId, from, to, amountPaise, idempotencyKey },
+    outcome: "success",
+  });
   return { transactionId, replayed: false };
 }
 
@@ -102,7 +104,8 @@ async function rollback(client) {
 }
 
 // Moves money between two accounts in one database transaction.
-// `pool` is a pg.Pool. Throws errors carrying a `code`.
+// `pool` is a pg.Pool; `actor` is { id, role } of the verified user. Throws errors carrying a `code`.
+// It does not check who owns `from`: callers (the HTTP routes) must authorize first.
 export async function transfer(pool, request) {
   validate(request);
   const requestHash = hashRequest(request);

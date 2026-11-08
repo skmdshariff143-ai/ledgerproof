@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import pg from "pg";
 
-const url = process.env.DATABASE_URL;
+const url = process.env.TEST_DATABASE_URL;
 const schemaSql = readFileSync(new URL("../../db/schema.sql", import.meta.url), "utf8");
 let db;
 
 before(async () => {
   // These tests wipe the database, so refuse anything not named *_test.
-  assert.ok(url && new URL(url).pathname.endsWith("_test"), "DATABASE_URL must point to a *_test database");
+  assert.ok(url && new URL(url).pathname.endsWith("_test"), "TEST_DATABASE_URL must point to a *_test database");
   db = new pg.Client({ connectionString: url });
   await db.connect();
 });
@@ -46,7 +46,7 @@ async function newAccounts() {
 async function postEntries(entries) {
   await db.query("BEGIN");
   try {
-    const t = await db.query("INSERT INTO transactions (type) VALUES ('transfer') RETURNING id");
+    const t = await db.query("INSERT INTO transactions (type, initiated_by) VALUES ('transfer', (SELECT id FROM users LIMIT 1)) RETURNING id");
     for (const [accountId, direction, amount] of entries) {
       await db.query(
         "INSERT INTO ledger_entries (transaction_id, account_id, direction, amount_paise) VALUES ($1,$2,$3,$4)",
@@ -90,8 +90,8 @@ test("THREAT tampering: ledger entries cannot be updated or deleted", async () =
 });
 
 test("THREAT tampering: audit log cannot be updated or deleted", async () => {
-  await db.query("INSERT INTO audit_log (actor, action) VALUES ('tester', 'login')");
-  await assert.rejects(db.query("UPDATE audit_log SET actor = 'someone else'"), /append-only/);
+  await db.query("INSERT INTO audit_log (action, outcome) VALUES ('login', 'success')");
+  await assert.rejects(db.query("UPDATE audit_log SET outcome = 'denied'"), /append-only/);
   await assert.rejects(db.query("DELETE FROM audit_log"), /append-only/);
 });
 
@@ -151,7 +151,7 @@ test("running balance is set by the database, even if the client sends a fake on
   const [vault, b] = await newAccounts();
   await postEntries([[vault, "debit", 500], [b, "credit", 500]]);
   await db.query("BEGIN");
-  const t = await db.query("INSERT INTO transactions (type) VALUES ('deposit') RETURNING id");
+  const t = await db.query("INSERT INTO transactions (type, initiated_by) VALUES ('deposit', (SELECT id FROM users LIMIT 1)) RETURNING id");
   await db.query(
     `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount_paise, running_balance_paise)
      VALUES ($1, $2, 'debit', 200, 999999), ($1, $3, 'credit', 200, 999999)`,
