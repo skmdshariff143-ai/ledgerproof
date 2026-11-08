@@ -20,15 +20,19 @@ after(() => pool.end());
 beforeEach(async () => {
   await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
   await pool.query(schemaSql);
-  treasury = await account("Treasury", true);
-  alice = await account("Alice", false);
-  bob = await account("Bob", false);
+  treasury = (await pool.query("SELECT id FROM accounts WHERE account_type = 'system_vault'")).rows[0].id;
+  alice = await userAccount("alice@test.local");
+  bob = await userAccount("bob@test.local");
 });
 
-async function account(name, allowNegative) {
+async function userAccount(email) {
+  const user = await pool.query(
+    "INSERT INTO users (email, password_hash, role) VALUES ($1, 'not-a-real-hash', 'account_holder') RETURNING id",
+    [email],
+  );
   const { rows } = await pool.query(
-    "INSERT INTO accounts (name, allow_negative) VALUES ($1, $2) RETURNING id",
-    [name, allowNegative],
+    "INSERT INTO accounts (account_number, account_type, owner_id) VALUES ($1, 'user_checking', $2) RETURNING id",
+    [email, user.rows[0].id],
   );
   return rows[0].id;
 }
@@ -164,4 +168,23 @@ test("THREAT malformed ids: bad UUIDs and case variants are rejected without lea
   await assert.rejects(transfer(pool, { ...base, to: "not-a-uuid" }), { code: "INVALID_INPUT" });
   await assert.rejects(transfer(pool, { ...base, to: alice.toUpperCase() }), { code: "INVALID_INPUT" });
   await assert.rejects(transfer(pool, { ...base, idempotencyKey: "x".repeat(201) }), { code: "INVALID_INPUT" });
+});
+
+test("THREAT frozen account: a frozen account can neither send nor receive", async () => {
+  await fund(alice, 1000, "fund-1");
+  await pool.query("UPDATE accounts SET status = 'frozen' WHERE id = $1", [bob]);
+  const base = { actor: "u1", amountPaise: 100 };
+  await assert.rejects(transfer(pool, { ...base, from: alice, to: bob, idempotencyKey: "t-1" }), { code: "ACCOUNT_FROZEN" });
+  await assert.rejects(transfer(pool, { ...base, from: bob, to: alice, idempotencyKey: "t-2" }), { code: "ACCOUNT_FROZEN" });
+  assert.equal(await balance(alice), 1000);
+});
+
+test("transaction type is derived from the locked accounts, and balance_paise matches the ledger", async () => {
+  await fund(alice, 1000, "fund-1");
+  await transfer(pool, { actor: "u1", from: alice, to: bob, amountPaise: 300, idempotencyKey: "t-1" });
+  await transfer(pool, { actor: "u1", from: bob, to: treasury, amountPaise: 100, idempotencyKey: "t-2" });
+  const types = await pool.query("SELECT type FROM transactions");
+  assert.deepEqual(types.rows.map((r) => r.type).sort(), ["deposit", "transfer", "withdrawal"]);
+  const cached = await pool.query("SELECT id, balance_paise::int AS b FROM accounts");
+  for (const row of cached.rows) assert.equal(row.b, await balance(row.id));
 });

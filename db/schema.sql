@@ -1,15 +1,35 @@
 -- LedgerProof schema. Money is integer paise. Ledger, transaction, idempotency and audit tables are append-only.
 
-CREATE TABLE accounts (
-  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name       text NOT NULL,
-  -- Only system accounts (e.g. a treasury that funds others) may go below zero.
-  allow_negative boolean NOT NULL DEFAULT false,
-  created_at timestamptz NOT NULL DEFAULT now()
+CREATE TABLE users (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email         text NOT NULL UNIQUE CHECK (email = lower(email)),
+  password_hash text NOT NULL,
+  role          text NOT NULL CHECK (role IN ('admin', 'account_holder', 'auditor')),
+  created_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- balance_paise is a cache of SUM(credits) - SUM(debits) kept by the ledger trigger below;
+-- it lets the database itself refuse an overdraft.
+CREATE TABLE accounts (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_number text NOT NULL UNIQUE,
+  account_type   text NOT NULL CHECK (account_type IN ('system_vault', 'user_checking')),
+  owner_id       uuid REFERENCES users (id),
+  status         text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'frozen')),
+  balance_paise  bigint NOT NULL DEFAULT 0,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT vault_has_no_owner CHECK ((account_type = 'system_vault') = (owner_id IS NULL)),
+  -- Only the vault may go below zero: it is where deposited money comes from.
+  CONSTRAINT user_balance_not_negative CHECK (account_type = 'system_vault' OR balance_paise >= 0)
+);
+
+CREATE UNIQUE INDEX accounts_single_vault ON accounts (account_type) WHERE account_type = 'system_vault';
+
+INSERT INTO accounts (account_number, account_type) VALUES ('VAULT-0001', 'system_vault');
 
 CREATE TABLE transactions (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  type       text NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -19,6 +39,8 @@ CREATE TABLE ledger_entries (
   account_id     uuid   NOT NULL REFERENCES accounts (id),
   direction      text   NOT NULL CHECK (direction IN ('debit', 'credit')),
   amount_paise   bigint NOT NULL CHECK (amount_paise > 0),
+  -- Set by the ledger_entries_apply trigger; any value the client sends is overwritten.
+  running_balance_paise bigint NOT NULL,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 
@@ -70,19 +92,60 @@ CREATE TRIGGER idempotency_keys_no_truncate
   BEFORE TRUNCATE ON idempotency_keys
   FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
 
--- allow_negative switches off the overdraft check, so it can never change after creation.
-CREATE FUNCTION reject_allow_negative_change() RETURNS trigger LANGUAGE plpgsql AS $$
+-- Accounts open empty, are never deleted, never change type, owner or number, and their
+-- balance moves only through ledger_entries_apply (which runs at trigger depth 2).
+CREATE FUNCTION guard_account() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW.allow_negative IS DISTINCT FROM OLD.allow_negative THEN
-    RAISE EXCEPTION 'accounts.allow_negative cannot be changed';
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'accounts cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.balance_paise <> 0 THEN
+      RAISE EXCEPTION 'accounts must open with a zero balance';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.account_number IS DISTINCT FROM OLD.account_number
+     OR NEW.account_type IS DISTINCT FROM OLD.account_type
+     OR NEW.owner_id IS DISTINCT FROM OLD.owner_id THEN
+    RAISE EXCEPTION 'accounts id, account_number, account_type and owner_id cannot be changed';
+  END IF;
+  IF NEW.balance_paise IS DISTINCT FROM OLD.balance_paise AND pg_trigger_depth() < 2 THEN
+    RAISE EXCEPTION 'accounts.balance_paise changes only through ledger_entries';
   END IF;
   RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER accounts_allow_negative_fixed
-  BEFORE UPDATE ON accounts
-  FOR EACH ROW EXECUTE FUNCTION reject_allow_negative_change();
+CREATE TRIGGER accounts_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON accounts
+  FOR EACH ROW EXECUTE FUNCTION guard_account();
+
+-- Each ledger row moves its account's balance and records the result as running_balance_paise.
+-- The UPDATE also fires user_balance_not_negative, so an overdraft fails here.
+CREATE FUNCTION apply_ledger_entry() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  account_status text;
+BEGIN
+  UPDATE accounts
+     SET balance_paise = balance_paise
+                         + CASE NEW.direction WHEN 'credit' THEN NEW.amount_paise ELSE -NEW.amount_paise END
+   WHERE id = NEW.account_id
+  RETURNING balance_paise, status INTO NEW.running_balance_paise, account_status;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'account % does not exist', NEW.account_id;
+  END IF;
+  IF account_status <> 'active' THEN
+    RAISE EXCEPTION 'account % is %', NEW.account_id, account_status;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER ledger_entries_apply
+  BEFORE INSERT ON ledger_entries
+  FOR EACH ROW EXECUTE FUNCTION apply_ledger_entry();
 
 CREATE TRIGGER audit_log_append_only
   BEFORE UPDATE OR DELETE ON audit_log

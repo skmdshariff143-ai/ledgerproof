@@ -33,43 +33,46 @@ async function findExisting(client, key, requestHash) {
   return { transactionId: rows[0].transaction_id, replayed: true };
 }
 
-// Locks the source account so two spends cannot both read the same balance.
-// FOR NO KEY UPDATE (not FOR UPDATE) so it does not clash with the foreign-key
-// check on the destination row; otherwise A->B and B->A at once would deadlock.
-async function lockSource(client, from) {
+// Locks both accounts in one statement, in ascending id order, so A->B and B->A
+// running at once queue on the same first row instead of each holding one and
+// waiting for the other. FOR NO KEY UPDATE matches the lock the balance UPDATE
+// takes and does not block foreign-key checks.
+// has_funds is compared in SQL so large bigint balances never pass through a JS Number.
+async function lockAccounts(client, from, to, amountPaise) {
   const { rows } = await client.query(
-    "SELECT allow_negative FROM accounts WHERE id = $1 FOR NO KEY UPDATE",
-    [from],
+    `SELECT id, account_type, status, balance_paise >= $2 AS has_funds
+       FROM accounts WHERE id = ANY($1::uuid[])
+      ORDER BY id
+        FOR NO KEY UPDATE`,
+    [[from, to], amountPaise],
   );
-  if (rows.length === 0) throw fail("ACCOUNT_NOT_FOUND", "source account not found");
-  return rows[0];
+  const source = rows.find((row) => row.id === from);
+  const destination = rows.find((row) => row.id === to);
+  if (!source || !destination) throw fail("ACCOUNT_NOT_FOUND", "account not found");
+  return { source, destination };
 }
 
-async function requireAccount(client, id) {
-  const { rows } = await client.query("SELECT 1 FROM accounts WHERE id = $1", [id]);
-  if (rows.length === 0) throw fail("ACCOUNT_NOT_FOUND", "destination account not found");
-}
-
-// Compared in SQL so large bigint balances never pass through a JS Number.
-async function hasFunds(client, accountId, amountPaise) {
-  const { rows } = await client.query(
-    `SELECT COALESCE(SUM(CASE direction WHEN 'credit' THEN amount_paise ELSE -amount_paise END), 0) >= $2 AS ok
-       FROM ledger_entries WHERE account_id = $1`,
-    [accountId, amountPaise],
-  );
-  return rows[0].ok;
+function transactionType(source, destination) {
+  if (source.account_type === "system_vault") return "deposit";
+  if (destination.account_type === "system_vault") return "withdrawal";
+  return "transfer";
 }
 
 async function post(client, { actor, from, to, amountPaise, idempotencyKey }, requestHash) {
-  const { allow_negative } = await lockSource(client, from);
+  const { source, destination } = await lockAccounts(client, from, to, amountPaise);
   // A parallel request with the same key may have committed while we waited for the lock.
   const earlier = await findExisting(client, idempotencyKey, requestHash);
   if (earlier) return earlier;
-  await requireAccount(client, to);
-  if (!allow_negative && !(await hasFunds(client, from, amountPaise))) {
+  if (source.status !== "active" || destination.status !== "active") {
+    throw fail("ACCOUNT_FROZEN", "account is frozen");
+  }
+  if (source.account_type !== "system_vault" && !source.has_funds) {
     throw fail("INSUFFICIENT_FUNDS", "insufficient funds");
   }
-  const tx = await client.query("INSERT INTO transactions DEFAULT VALUES RETURNING id");
+  const tx = await client.query(
+    "INSERT INTO transactions (type) VALUES ($1) RETURNING id",
+    [transactionType(source, destination)],
+  );
   const transactionId = tx.rows[0].id;
   await client.query(
     `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount_paise)

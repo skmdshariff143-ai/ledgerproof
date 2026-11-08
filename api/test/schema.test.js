@@ -21,16 +21,32 @@ beforeEach(async () => {
   await db.query(schemaSql);
 });
 
+async function vaultId() {
+  const { rows } = await db.query("SELECT id FROM accounts WHERE account_type = 'system_vault'");
+  return rows[0].id;
+}
+
+async function userAccount(email) {
+  const user = await db.query(
+    "INSERT INTO users (email, password_hash, role) VALUES ($1, 'not-a-real-hash', 'account_holder') RETURNING id",
+    [email],
+  );
+  const { rows } = await db.query(
+    "INSERT INTO accounts (account_number, account_type, owner_id) VALUES ($1, 'user_checking', $2) RETURNING id",
+    [email, user.rows[0].id],
+  );
+  return rows[0].id;
+}
+
+// The vault funds user B, so money in every test comes from somewhere.
 async function newAccounts() {
-  const a = await db.query("INSERT INTO accounts (name) VALUES ('A') RETURNING id");
-  const b = await db.query("INSERT INTO accounts (name) VALUES ('B') RETURNING id");
-  return [a.rows[0].id, b.rows[0].id];
+  return [await vaultId(), await userAccount("b@test.local")];
 }
 
 async function postEntries(entries) {
   await db.query("BEGIN");
   try {
-    const t = await db.query("INSERT INTO transactions DEFAULT VALUES RETURNING id");
+    const t = await db.query("INSERT INTO transactions (type) VALUES ('transfer') RETURNING id");
     for (const [accountId, direction, amount] of entries) {
       await db.query(
         "INSERT INTO ledger_entries (transaction_id, account_id, direction, amount_paise) VALUES ($1,$2,$3,$4)",
@@ -90,11 +106,10 @@ test("THREAT double payment: the same idempotency key cannot be used twice", asy
   );
 });
 
-test("THREAT tampering: accounts cannot turn on allow_negative; idempotency keys and transactions are append-only", async () => {
+test("THREAT tampering: idempotency keys and transactions are append-only", async () => {
   const [a, b] = await newAccounts();
   const t = await postEntries([[a, "debit", 500], [b, "credit", 500]]);
   await db.query("INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ('k1', 'h', $1)", [t]);
-  await assert.rejects(db.query("UPDATE accounts SET allow_negative = true"), /allow_negative/);
   await assert.rejects(db.query("DELETE FROM idempotency_keys"), /append-only/);
   await assert.rejects(db.query("UPDATE transactions SET created_at = now()"), /append-only/);
   await assert.rejects(db.query("DELETE FROM transactions"), /append-only/);
@@ -105,4 +120,81 @@ test("THREAT slow lock: ledger_entries is indexed by account_id and transaction_
   const defs = rows.map((r) => r.indexdef).join("\n");
   assert.match(defs, /\(account_id\)/);
   assert.match(defs, /\(transaction_id\)/);
+});
+
+test("THREAT overdraft at the database: entries that take a user account below zero are rejected", async () => {
+  const [vault, b] = await newAccounts();
+  const c = await userAccount("c@test.local");
+  await postEntries([[vault, "debit", 500], [b, "credit", 500]]);
+  await assert.rejects(postEntries([[b, "debit", 501], [c, "credit", 501]]), /user_balance_not_negative/);
+  const { rows } = await db.query("SELECT balance_paise::int AS b FROM accounts WHERE id = $1", [b]);
+  assert.equal(rows[0].b, 500);
+});
+
+test("THREAT balance forgery: balance_paise cannot be set directly or opened non-zero", async () => {
+  const [, b] = await newAccounts();
+  await assert.rejects(
+    db.query("UPDATE accounts SET balance_paise = 1000000 WHERE id = $1", [b]),
+    /only through ledger_entries/,
+  );
+  const owner = await db.query("SELECT owner_id FROM accounts WHERE id = $1", [b]);
+  await assert.rejects(
+    db.query(
+      "INSERT INTO accounts (account_number, account_type, owner_id, balance_paise) VALUES ('X', 'user_checking', $1, 500)",
+      [owner.rows[0].owner_id],
+    ),
+    /zero balance/,
+  );
+});
+
+test("running balance is set by the database, even if the client sends a fake one", async () => {
+  const [vault, b] = await newAccounts();
+  await postEntries([[vault, "debit", 500], [b, "credit", 500]]);
+  await db.query("BEGIN");
+  const t = await db.query("INSERT INTO transactions (type) VALUES ('deposit') RETURNING id");
+  await db.query(
+    `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount_paise, running_balance_paise)
+     VALUES ($1, $2, 'debit', 200, 999999), ($1, $3, 'credit', 200, 999999)`,
+    [t.rows[0].id, vault, b],
+  );
+  await db.query("COMMIT");
+  const { rows } = await db.query(
+    "SELECT running_balance_paise::int AS r FROM ledger_entries WHERE account_id = $1 ORDER BY id",
+    [b],
+  );
+  assert.deepEqual(rows.map((r) => r.r), [500, 700]);
+  const vaultRow = await db.query("SELECT balance_paise::int AS b FROM accounts WHERE id = $1", [vault]);
+  assert.equal(vaultRow.rows[0].b, -700);
+});
+
+test("THREAT ownership change: account type, owner and number cannot be changed", async () => {
+  const [vault, b] = await newAccounts();
+  const other = await db.query(
+    "INSERT INTO users (email, password_hash, role) VALUES ('m@test.local', 'h', 'account_holder') RETURNING id",
+  );
+  await assert.rejects(db.query("UPDATE accounts SET owner_id = $1 WHERE id = $2", [other.rows[0].id, b]), /cannot be changed/);
+  await assert.rejects(db.query("UPDATE accounts SET account_type = 'system_vault' WHERE id = $1", [b]), /cannot be changed/);
+  await assert.rejects(db.query("UPDATE accounts SET account_number = 'Y' WHERE id = $1", [vault]), /cannot be changed/);
+  await assert.rejects(db.query("DELETE FROM accounts WHERE id = $1", [vault]), /cannot be deleted/);
+});
+
+test("THREAT second vault, ownerless user account or unknown role: rejected by constraints", async () => {
+  await assert.rejects(
+    db.query("INSERT INTO accounts (account_number, account_type) VALUES ('VAULT-0002', 'system_vault')"),
+    /accounts_single_vault/,
+  );
+  await assert.rejects(
+    db.query("INSERT INTO accounts (account_number, account_type) VALUES ('U1', 'user_checking')"),
+    /vault_has_no_owner/,
+  );
+  await assert.rejects(
+    db.query("INSERT INTO users (email, password_hash, role) VALUES ('r@test.local', 'h', 'superuser')"),
+    /users_role_check/,
+  );
+});
+
+test("THREAT frozen account at the database: ledger entries on a frozen account are rejected", async () => {
+  const [vault, b] = await newAccounts();
+  await db.query("UPDATE accounts SET status = 'frozen' WHERE id = $1", [b]);
+  await assert.rejects(postEntries([[vault, "debit", 100], [b, "credit", 100]]), /is frozen/);
 });
