@@ -83,3 +83,12 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 
 > **Rules note (2026-11-09, not an AI-use entry):**
 > Updated `CLAUDE.md` on 2026-11-08/09 to remove the `Co-Authored-By` trailer requirement and enforce manual `git push` after earlier commits (5 of the first 19) included the trailer.
+
+## 2026-11-09: The commit-time balance check could be hidden with a temp table (database integrity)
+
+- **Asked:** Deploy: give the API a restricted database role, then have the `security-reviewer` subagent audit the diff.
+- **What the AI produced:** In Phase 1 the double-entry check `check_transaction_balanced()` was written as a plain trigger function that reads `ledger_entries` by its bare name. It passed every test in the next five phases and every earlier security review.
+- **What was wrong (found by the reviewer, who ran it on a scratch database):** PostgreSQL searches the session's temporary schema before `public`, and every database user may create temp tables by default. A session could create a temp table named `ledger_entries`, insert a lone credit into the real one, and `COMMIT`. The deferred check read the empty fake table, saw 0 = 0 and passed. The account was credited 999,999 paise and the vault stayed at 0: money created with no debit. This needed SQL access to the database, not just the HTTP API, which is why the API tests never touched it. It had been there since Phase 1 and only surfaced when the review asked what the restricted role could do.
+- **What was done instead:** All the trigger functions now pin `search_path = public, pg_temp`, so a temp table is searched last. A second thing I got wrong in the same change: my first test of the restricted role expected `GRANT ALL ... TO PUBLIC` to be rejected, but PostgreSQL turns a grant by a role without grant option into a warning and a no-op. I rewrote that test to prove the grant did nothing, which is the real property.
+- **How verified:** The new test `THREAT temp table shadow` was written first and run against the old schema; it failed because `COMMIT` succeeded. After the fix it passes. A mutation check (giving the app role `UPDATE` on accounts) makes the two role tests fail. 88/88 API tests pass, all running as the restricted role.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/1d16c66
