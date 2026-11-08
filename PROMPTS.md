@@ -50,3 +50,12 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** `transfer()` now takes the audit action and target from the transaction type (`deposit`, `withdraw`, `transfer`), matching the names the routes use for denials and failures. Reconcile now starts from `transactions`, so an empty one is reported.
 - **How verified:** New tests `THREAT hidden deposits` (one admin deposit adds exactly one `success`/`deposit` row, targeting the credited account) and `reconcile reports a transaction that has no ledger rows`. 58/58 tests pass.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/a79b4a6
+
+## 2026-11-08: A replay could report a committed payment as a server error (idempotency / audit trail)
+
+- **Asked:** Phase 4: per-user idempotency keys, a replay that answers exactly like the first call, and an audit row for every replay.
+- **What the AI produced:** The `moneyRoute` helper wrote the replay's audit row with a plain `await audit(...)` before sending the 201.
+- **What was wrong (found by the `security-reviewer` subagent):** If that audit insert failed, the error escaped and the client got `500 INTERNAL` for a payment that had already committed. The 500 happened outside the `audited` helper, so it left no error row either. A client that trusts the 500 might pay again some other way. This was the same mistake fixed in Phase 2 for the failure path, repeated in new code.
+- **What was done instead:** The replay audit write now catches and logs its own failure, and the client still gets the original 201. The reviewer also asked for two decisions to be pinned by tests: a replay after the account is frozen still reports the original payment, and a withdrawal key reused on a transfer to the vault is refused, not replayed.
+- **How verified:** New tests `a replay after the source account is frozen reports the payment that already happened` and `a withdrawal key reused on a transfer to the vault is refused, not replayed`. 66/66 tests pass. There is no automated test that forces the replay audit write to fail.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/724f4f8
