@@ -70,6 +70,16 @@ cd api
 npm test
 ```
 
+| File | What it proves |
+|---|---|
+| `schema.test.js` | Database guards: balanced entries, append-only tables, no negative user balance, no direct balance edits, one vault, immutable owners |
+| `transfer.test.js` | `transfer()`: overdraft, bad input, idempotency, deadlock-free locking, isolation level |
+| `auth.test.js` | Login, forged tokens, roles, ownership (IDOR), audit rows for denials and failures |
+| `money.test.js` | Deposits, withdrawals, reconciliation (including catching a tampered balance) |
+| `idempotency.test.js` | Per-user keys, exact replay (sequential and concurrent), key reuse conflicts |
+| `concurrency.test.js` | 20 simultaneous withdrawals let exactly 5 succeed; opposite transfers at the same moment do not deadlock |
+| `threats.test.js` | Every test named in THREATS.md exists, and every `THREAT` test is listed there |
+
 ## Status
 
 Built and tested:
