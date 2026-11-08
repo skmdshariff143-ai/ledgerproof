@@ -92,3 +92,12 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** All the trigger functions now pin `search_path = public, pg_temp`, so a temp table is searched last. A second thing I got wrong in the same change: my first test of the restricted role expected `GRANT ALL ... TO PUBLIC` to be rejected, but PostgreSQL turns a grant by a role without grant option into a warning and a no-op. I rewrote that test to prove the grant did nothing, which is the real property.
 - **How verified:** The new test `THREAT temp table shadow` was written first and run against the old schema; it failed because `COMMIT` succeeded. After the fix it passes. A mutation check (giving the app role `UPDATE` on accounts) makes the two role tests fail. 88/88 API tests pass, all running as the restricted role.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/1d16c66
+
+## 2026-11-09: The first Vercel deployment crashed on a file name (deployment)
+
+- **Asked:** Deploy: make the API run as an Express function on Vercel.
+- **What the AI produced:** `src/index.js` exports the Express app as the default export, as Vercel's documentation describes, but the factory that builds the app stayed in `src/app.js`, which exports only the named function `createApp`.
+- **What was wrong:** Vercel's zero-config detection treats `app.js`, `index.js` and `server.js` as entry point candidates, and it picked `src/app.js` first. Every request to the deployed API failed with `FUNCTION_INVOCATION_FAILED` ("The default export must be a function or server"). All 88 local tests passed because they import the files directly and never go through Vercel's entry detection. I had read which names count as entries but not their order, and my plan only said I would check the docs. It was found only by sending a request to the live URL and reading the runtime log.
+- **What was done instead:** The factory is now `create-app.js`, so `index.js` is the only candidate. DECISIONS.md records why the file is not called `app.js`.
+- **How verified:** An import check shows `index.js` default-exports a function with `listen`, and 88/88 API tests pass. The fix is **not yet verified on the live site**: it needs a push, and the API's secrets are not set yet.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/37ed7eb
