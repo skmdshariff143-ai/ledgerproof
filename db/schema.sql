@@ -48,7 +48,8 @@ CREATE TABLE ledger_entries (
 );
 
 -- Balance lookups and the commit-time balance check read by these columns.
-CREATE INDEX ledger_entries_account_id_idx ON ledger_entries (account_id);
+-- (account_id, id) also serves "latest entry per account" in reconcile.
+CREATE INDEX ledger_entries_account_id_idx ON ledger_entries (account_id, id);
 CREATE INDEX ledger_entries_transaction_id_idx ON ledger_entries (transaction_id);
 
 -- One row per accepted request key. The primary key is what stops a second payment.

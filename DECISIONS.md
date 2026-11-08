@@ -48,4 +48,8 @@
 
 **The seed is idempotent.** The opening deposits use fixed idempotency keys, so running `npm run seed` twice replays them instead of paying twice.
 
+**Deposits, withdrawals and transfers share one code path.** All three call `transfer()`, so they get the same lock order, overdraft check, idempotency and audit row. They differ only in who may call them and which side is the vault. A deposit is the vault paying a user and is admin-only, because it creates customer money. A withdrawal is a user paying the vault, from their own account only.
+
+**Reconcile recomputes, it does not trust.** `GET /api/ledger/reconcile` sums the ledger rows itself and compares the result with the stored balances and the last running balances. It also lists any transaction whose debits and credits differ, and any user account below zero. All checks read one `REPEATABLE READ READ ONLY` snapshot, so transfers committing during the check cannot cause false alarms. Its job is to catch what the triggers cannot stop, such as a superuser editing a balance with triggers switched off.
+
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.

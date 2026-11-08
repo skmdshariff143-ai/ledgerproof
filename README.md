@@ -52,6 +52,9 @@ All routes except login need `Authorization: Bearer <token>`.
 | `GET /api/accounts` | all | account holders see only their own |
 | `GET /api/accounts/:id/statement` | all | account holders: own accounts only |
 | `POST /api/transactions/transfer` | account holder | `{ fromAccountId, toAccountId, amountPaise }`; `Idempotency-Key` header required; source must be yours |
+| `POST /api/transactions/deposit` | admin | `{ toAccountId, amountPaise }`; `Idempotency-Key` required; the vault pays |
+| `POST /api/transactions/withdraw` | account holder | `{ fromAccountId, amountPaise }`; `Idempotency-Key` required; source must be yours; paid into the vault |
+| `GET /api/ledger/reconcile` | admin, auditor | recomputes the books from the ledger: `{ balanced, totals, problems }` |
 | `POST /api/accounts` | admin | `{ ownerId }` of an account holder |
 | `POST /api/accounts/:id/freeze`, `/unfreeze` | admin | user accounts only |
 | `GET /api/audit-logs` | admin, auditor | latest 200 entries |
@@ -71,12 +74,11 @@ npm test
 
 Built and tested:
 - Ledger schema and its database-level guards.
-- Transfers between accounts.
+- Deposits, withdrawals and transfers between accounts.
+- The reconciliation endpoint.
 - Login, role checks, ownership checks and the audit trail.
 
 Not built yet:
-- Deposit and withdrawal endpoints.
-- The reconciliation endpoint.
 - Per-user idempotency keys.
 - The frontend.
 - Deployment.

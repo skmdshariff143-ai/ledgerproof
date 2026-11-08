@@ -118,7 +118,7 @@ test("THREAT tampering: idempotency keys and transactions are append-only", asyn
 test("THREAT slow lock: ledger_entries is indexed by account_id and transaction_id", async () => {
   const { rows } = await db.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'ledger_entries'");
   const defs = rows.map((r) => r.indexdef).join("\n");
-  assert.match(defs, /\(account_id\)/);
+  assert.match(defs, /\(account_id, id\)/);
   assert.match(defs, /\(transaction_id\)/);
 });
 

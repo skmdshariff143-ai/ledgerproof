@@ -82,10 +82,13 @@ async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }
     "INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ($1, $2, $3)",
     [idempotencyKey, requestHash, transactionId],
   );
+  // Same action and target names the HTTP routes use for denials and failures,
+  // so an auditor filtering by "deposit" sees successes and failures alike.
+  const type = transactionType(source, destination);
   await audit(client, {
     actor,
-    action: "transfer",
-    target: `account:${from}`,
+    action: { deposit: "deposit", withdrawal: "withdraw", transfer: "transfer" }[type],
+    target: `account:${type === "deposit" ? to : from}`,
     ip,
     details: { transactionId, from, to, amountPaise, idempotencyKey },
     outcome: "success",

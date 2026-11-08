@@ -75,28 +75,92 @@ export function createApp(pool, { jwtSecret }) {
     res.json({ account, entries: rows });
   });
 
+  // owner_id can never change (accounts_guard), so checking it before the money moves is safe.
+  // A missing account gets the same 403 as someone else's.
+  async function requireOwnAccount(req, accountId, action) {
+    requireUuid(accountId, "account id");
+    const account = await findAccount(pool, accountId);
+    if (account?.owner_id !== req.user.id) await deny(pool, req, action, `account:${accountId}`);
+  }
+
+  async function vaultId() {
+    const { rows } = await pool.query("SELECT id FROM accounts WHERE account_type = 'system_vault'");
+    return rows[0].id;
+  }
+
+  const moveMoney = (req, from, to, amountPaise) =>
+    transfer(pool, { actor: req.user, ip: req.ip, from, to, amountPaise, idempotencyKey: req.get("Idempotency-Key") });
+
+  const sendResult = (res, result) => res.status(result.replayed ? 200 : 201).json(result);
+
   route("post", "/api/transactions/transfer", ["account_holder"], async (req, res) => {
     const { fromAccountId, toAccountId, amountPaise } = req.body ?? {};
-    const target = `account:${fromAccountId}`;
-    const result = await audited(req, "transfer", target, async () => {
-      requireUuid(fromAccountId, "fromAccountId");
-      // owner_id can never change (accounts_guard), so checking it before the transfer is safe.
-      const source = await findAccount(pool, fromAccountId);
-      if (source?.owner_id !== req.user.id) await deny(pool, req, "transfer", target);
-      // Paying the vault is a withdrawal; it must go through the withdrawal rules, not this route.
+    sendResult(res, await audited(req, "transfer", `account:${fromAccountId}`, async () => {
+      await requireOwnAccount(req, fromAccountId, "transfer");
+      // Paying the vault is a withdrawal; it must go through the withdrawal route, not this one.
       if (UUID.test(toAccountId ?? "") && (await findAccount(pool, toAccountId))?.account_type === "system_vault") {
         throw fail("INVALID_INPUT", "transfers must go to a user account");
       }
-      return transfer(pool, {
-        actor: req.user,
-        ip: req.ip,
-        from: fromAccountId,
-        to: toAccountId,
-        amountPaise,
-        idempotencyKey: req.get("Idempotency-Key"),
-      });
+      return moveMoney(req, fromAccountId, toAccountId, amountPaise);
+    }));
+  });
+
+  // Deposits are money entering the system, so only an admin can create them; the vault pays.
+  route("post", "/api/transactions/deposit", ["admin"], async (req, res) => {
+    const { toAccountId, amountPaise } = req.body ?? {};
+    sendResult(res, await audited(req, "deposit", `account:${toAccountId}`, async () => {
+      requireUuid(toAccountId, "toAccountId");
+      return moveMoney(req, await vaultId(), toAccountId, amountPaise);
+    }));
+  });
+
+  route("post", "/api/transactions/withdraw", ["account_holder"], async (req, res) => {
+    const { fromAccountId, amountPaise } = req.body ?? {};
+    sendResult(res, await audited(req, "withdraw", `account:${fromAccountId}`, async () => {
+      await requireOwnAccount(req, fromAccountId, "withdraw");
+      return moveMoney(req, fromAccountId, await vaultId(), amountPaise);
+    }));
+  });
+
+  route("get", "/api/ledger/reconcile", ["admin", "auditor"], async (req, res) => {
+    const report = await inTransaction(pool, async (client) => {
+      // One snapshot for every check, so transfers committing meanwhile cannot cause false alarms.
+      await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const totals = (await client.query(
+        `SELECT COALESCE(SUM(amount_paise) FILTER (WHERE direction = 'debit'), 0)::text AS debits_paise,
+                COALESCE(SUM(amount_paise) FILTER (WHERE direction = 'credit'), 0)::text AS credits_paise,
+                count(*)::int AS entries
+           FROM ledger_entries`,
+      )).rows[0];
+      // Starts from transactions, so one with no ledger rows at all is reported too.
+      const unbalanced = await client.query(
+        `SELECT t.id AS transaction_id FROM transactions t LEFT JOIN ledger_entries e ON e.transaction_id = t.id
+          GROUP BY t.id
+         HAVING count(e.id) = 0
+             OR SUM(CASE e.direction WHEN 'debit' THEN e.amount_paise ELSE -e.amount_paise END) <> 0`,
+      );
+      const accounts = await client.query(
+        `SELECT a.id, a.account_number, a.account_type, a.balance_paise::text AS stored_paise,
+                COALESCE(SUM(CASE e.direction WHEN 'credit' THEN e.amount_paise ELSE -e.amount_paise END), 0)::text AS ledger_paise,
+                (SELECT running_balance_paise FROM ledger_entries WHERE account_id = a.id ORDER BY id DESC LIMIT 1)::text AS last_running_paise
+           FROM accounts a LEFT JOIN ledger_entries e ON e.account_id = a.id
+          GROUP BY a.id ORDER BY a.account_number`,
+      );
+      return { totals, unbalanced: unbalanced.rows, accounts: accounts.rows };
     });
-    res.status(result.replayed ? 200 : 201).json(result);
+    const problems = [
+      ...report.unbalanced.map((r) => ({ type: "unbalanced_transaction", transactionId: r.transaction_id })),
+      ...report.accounts.flatMap((a) => [
+        a.stored_paise !== a.ledger_paise && { type: "balance_mismatch", accountId: a.id, storedPaise: a.stored_paise, ledgerPaise: a.ledger_paise },
+        a.last_running_paise !== null && a.last_running_paise !== a.stored_paise &&
+          { type: "running_balance_mismatch", accountId: a.id, storedPaise: a.stored_paise, lastRunningPaise: a.last_running_paise },
+        a.account_type === "user_checking" && BigInt(a.stored_paise) < 0n &&
+          { type: "negative_user_balance", accountId: a.id, storedPaise: a.stored_paise },
+      ].filter(Boolean)),
+    ];
+    const balanced = report.totals.debits_paise === report.totals.credits_paise && problems.length === 0;
+    await audit(pool, { actor: req.user, action: "reconcile", ip: req.ip, details: { balanced, problems: problems.length }, outcome: "success" });
+    res.json({ balanced, totals: report.totals, accountsChecked: report.accounts.length, problems });
   });
 
   route("post", "/api/accounts", ["admin"], async (req, res) => {

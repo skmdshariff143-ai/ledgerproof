@@ -12,6 +12,9 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 | Alice moves money out of Bob's account (IDOR) | Transfer route compares the source account's `owner_id` with the logged-in user; 403 plus a `denied` audit row | `owner_id` immutable (`accounts_guard`) | `THREAT IDOR transfer` |
 | Alice reads Bob's statement, or probes which account ids exist | Statement route checks ownership; a missing account gets the same 403 as a foreign one; both audited | none | `THREAT IDOR statement` |
 | Account holder mints money by naming the vault as the source | Vault has no owner, so the ownership check refuses it | `vault_has_no_owner` | `THREAT vault minting` |
+| Alice withdraws from Bob's account (IDOR) | Withdraw route checks the source account's `owner_id`; 403 plus a `denied` audit row | `owner_id` immutable | `THREAT IDOR withdrawal` (money.test.js) |
+| Account holder or auditor creates money with a deposit | Deposit route allows `admin` only; 403 plus a `denied` audit row | none | `THREAT self-deposit` (money.test.js) |
+| A rogue admin's deposits blend into routine transfers in the audit log | `transfer()` audits each success under the route's own action name (`deposit`, `withdraw`, `transfer`) and target | none | `THREAT hidden deposits` (money.test.js) |
 | Auditor writes (transfer, create, freeze) | `allowRoles`: auditor is named on no write route; 403 plus a `denied` audit row | none | `THREAT auditor writes` |
 | Admin spends from a user's account | Transfer route allows `account_holder` only | none | `THREAT admin forging` |
 | No token, token signed with another secret, `alg: none` | `jwt.verify` with `algorithms: ['HS256']`; 401 | none | `THREAT no or forged token` |
@@ -46,6 +49,10 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 | Database default isolation weakens the overdraft check | Transaction starts with `ISOLATION LEVEL READ COMMITTED` | none | `THREAT isolation` |
 | Malformed or case-variant account ids, oversized keys | `validate()` requires lowercase UUIDs and key length <= 200 | uuid column types | `THREAT malformed ids` |
 | Idempotency keys or transactions edited or deleted | none | Triggers: `transactions` and `idempotency_keys` append-only | `THREAT tampering: idempotency keys and transactions are append-only` |
+| Withdrawal beyond the balance, or zero, negative, fractional, string or null amounts | `transfer()` locked funds check; `validate()` requires a positive safe integer | `user_balance_not_negative`; `CHECK (amount_paise > 0)` | `THREAT overdraft withdrawal and bad amounts` (money.test.js) |
+| Retried deposit or withdrawal pays twice | Same idempotency key returns the original transaction | primary key on `idempotency_keys.key` | `THREAT replayed deposit and withdrawal` (money.test.js) |
+| Books silently drift: a balance edited past the triggers (for example by a superuser with triggers disabled) | `GET /api/ledger/reconcile` recomputes every balance from the ledger and reports `balance_mismatch` and `running_balance_mismatch` | append-only ledger is the source of truth | `THREAT tampering past the triggers` and `reconcile: balanced after ...` (money.test.js) |
+| A transaction recorded with no ledger rows | Reconcile starts from `transactions` and reports any with no entries | none | `reconcile reports a transaction that has no ledger rows` (money.test.js) |
 | Slow balance lookups hold the lock longer as the ledger grows | none | Indexes on `ledger_entries(account_id)` and `(transaction_id)` | `THREAT slow lock` (checks the indexes exist, not timing) |
 
 Known gaps:
@@ -53,5 +60,8 @@ Known gaps:
 - The `accounts_guard` balance check trusts `pg_trigger_depth() >= 2`. A session with UPDATE on `accounts` can create its own trigger (for example on a TEMP table) that updates `balance_paise` at depth 2 and mints money with no ledger entry. Found by the security review. Fix: the app connects as a role with only `UPDATE (status)` on `accounts`, and `apply_ledger_entry` runs as `SECURITY DEFINER` (not done yet).
 - `transfer()` itself does not check ownership; the HTTP route does. Any new caller of `transfer()` must authorize first.
 - No rate limit on login yet.
+- Because keys are global, one user can claim a key another user will send. For example, Bob sends a 1-paise transfer with the key an admin is about to use for a deposit. The admin's deposit then gets 409, and the 409 tells Bob the key exists. No money moves wrongly. Fixed by per-user keys (Phase 4).
+- A replayed request returns the original result but writes no audit row of its own.
+- Reconcile scans the whole ledger and has no rate limit. Its `problems` list is not capped.
 - Idempotency keys are global, not per user. They become per user when authentication is added.
 - No `lock_timeout` or `statement_timeout` is set yet.
