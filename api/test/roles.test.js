@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
 import { seed } from "../scripts/seed.js";
-import { createApp } from "../src/app.js";
+import { createApp } from "../src/create-app.js";
 import { assertRestrictedRole } from "../src/role-check.js";
 import { appDatabaseUrl, requireTestDatabase, resetDatabase, rolesSql, testDatabaseUrl } from "./helpers.js";
 

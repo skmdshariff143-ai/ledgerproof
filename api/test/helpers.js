@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import pg from "pg";
-import { createApp } from "../src/app.js";
+import { createApp } from "../src/create-app.js";
 import { seed } from "../scripts/seed.js";
 
 export const testDatabaseUrl = process.env.TEST_DATABASE_URL;

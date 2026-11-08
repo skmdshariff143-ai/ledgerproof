@@ -1,5 +1,5 @@
 import pg from "pg";
-import { createApp } from "./app.js";
+import { createApp } from "./create-app.js";
 import { parseAllowedOrigins } from "./origins.js";
 import { assertRestrictedRole } from "./role-check.js";
 

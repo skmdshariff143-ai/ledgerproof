@@ -78,6 +78,6 @@
 
 **Behind Vercel, trust one proxy hop; elsewhere none.** Audit rows record the client address, so the API must know the real one. On Vercel `X-Forwarded-For` is set by the platform, so Express trusts that single hop. Anywhere else the header is ignored, so a client cannot choose the address that is written to the audit log.
 
-**The API exports an app; a small file listens.** `src/index.js` builds and exports the Express app (what Vercel runs). `src/local.js` only calls `listen` for `npm start`. The database pool is small (5) and logs idle-connection errors instead of crashing the instance.
+**The API exports an app; a small file listens.** `src/index.js` builds and exports the Express app (what Vercel runs). `src/local.js` only calls `listen` for `npm start`. The factory lives in `create-app.js`, not `app.js`: Vercel treats `src/app.js` as an entry point candidate and ranks it above `index.js`, so a file of that name made the first deployment crash. The database pool is small (5) and logs idle-connection errors instead of crashing the instance.
 
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.
