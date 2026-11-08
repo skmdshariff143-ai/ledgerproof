@@ -59,3 +59,12 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** The replay audit write now catches and logs its own failure, and the client still gets the original 201. The reviewer also asked for two decisions to be pinned by tests: a replay after the account is frozen still reports the original payment, and a withdrawal key reused on a transfer to the vault is refused, not replayed.
 - **How verified:** New tests `a replay after the source account is frozen reports the payment that already happened` and `a withdrawal key reused on a transfer to the vault is refused, not replayed`. 66/66 tests pass. There is no automated test that forces the replay audit write to fail.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/724f4f8
+
+## 2026-11-09: THREATS.md had drifted from the tests (documentation honesty)
+
+- **Asked:** Phase 5: stress tests for concurrent overdraft and opposite-direction transfers, and a final check that THREATS.md matches the tests.
+- **What the AI produced earlier:** In Phase 2, fixing the security reviewer's findings added two tests (`THREAT withdrawal by transfer`, `THREAT frozen-status probe`). Their threats were never added to THREATS.md, and the commit and my summary did not say so.
+- **What was wrong:** THREATS.md is graded as "every threat mapped to a test", and CLAUDE.md says docs must describe what exists. For three phases it silently omitted two real defenses. Nothing in the project would have noticed.
+- **What was done instead:** A new test file `threats.test.js` reads THREATS.md and fails if a test it names does not exist, or if a `THREAT` test is not listed. Its first run failed on exactly those two tests, plus the new deadlock test. All three are now documented in THREATS.md.
+- **How verified:** The failing run showed the three missing titles; after the fix, 71/71 pass on three consecutive runs. A mutation check on the new deadlock test (locking accounts in request order instead of ascending id) made it fail with Postgres `deadlock detected`, so the stress test does catch the bug it exists for.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/4a0c4f0
