@@ -80,4 +80,6 @@
 
 **The API exports an app; a small file listens.** `src/index.js` builds and exports the Express app (what Vercel runs). `src/local.js` only calls `listen` for `npm start`. The factory lives in `create-app.js`, not `app.js`: Vercel treats `src/app.js` as an entry point candidate and ranks it above `index.js`, so a file of that name made the first deployment crash. The database pool is small (5) and logs idle-connection errors instead of crashing the instance.
 
+**The database connection is verified TLS, with the CA pinned in code.** Supabase accepts only TLS and signs with its own root CA, which Node does not trust, so the first live connection failed. Turning verification off (`sslmode=no-verify`) would encrypt the traffic but let anyone impersonate the database, so it is not offered. Instead `api/src/supabase-ca.js` holds Supabase's public root certificate, confirmed against the live servers, and `poolConfig` applies it to Supabase hosts only. It also removes any `sslmode` setting from the URL, because `pg` lets the URL override the config and a stray `no-verify` would silently weaken it. A local Postgres is left as configured.
+
 **Reference tables are append-only too.** `transactions` and `idempotency_keys` cannot be edited or deleted, because changing either would switch off an integrity check.

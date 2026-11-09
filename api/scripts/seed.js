@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
+import { poolConfig } from "../src/db-config.js";
 import { hashPassword } from "../src/password.js";
 import { transfer } from "../src/transfer.js";
 
@@ -54,7 +55,7 @@ export async function seed(pool) {
 // It needs owner rights, so on a deployed database set OWNER_DATABASE_URL to the owner connection
 // string for this one command; the API itself never gets those rights.
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const pool = new pg.Pool({ connectionString: process.env.OWNER_DATABASE_URL ?? process.env.DATABASE_URL });
+  const pool = new pg.Pool(poolConfig(process.env.OWNER_DATABASE_URL ?? process.env.DATABASE_URL));
   try {
     const { rows } = await pool.query("SELECT to_regclass('public.users') AS users");
     if (!rows[0].users) {

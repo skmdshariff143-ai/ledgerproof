@@ -51,12 +51,27 @@ The API listens on `http://localhost:3000` and the app on `http://localhost:5173
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `DATABASE_URL` | api | App database, for example `postgres://ledger:ledger@localhost:5432/ledgerproof` |
+| `DATABASE_URL` | api | App database. Locally, for example `postgres://ledger:ledger@localhost:5432/ledgerproof`. Deployed, it must connect as the restricted role `ledgerproof_app` (the API refuses to serve otherwise). For Supabase, use the Transaction pooler string with user `ledgerproof_app.<project-ref>` and no `sslmode` setting: TLS is verified in code |
+| `OWNER_DATABASE_URL` | api seed | Only for `npm run seed` on a deployed database: the schema owner's connection string. Unset falls back to `DATABASE_URL` |
 | `TEST_DATABASE_URL` | api tests | Test database. The name must end in `_test`: the tests wipe it |
 | `JWT_SECRET` | api | At least 32 random characters. The server refuses to start without it |
 | `ALLOWED_ORIGINS` | api | Browser origins allowed to read API answers, comma-separated, exact (no trailing slash). Unset means none. For example `http://localhost:5173,https://your-app.example.com` |
 | `PORT` | api | Defaults to 3000 |
 | `VITE_API_URL` | web | Where the API runs. Defaults to `http://localhost:3000` |
+| `API_URL` | `npm run attack` | The address of your own deployment, for the live attack checks. The script refuses to run without it |
+
+## Deploy (Vercel + Supabase)
+
+The same code runs on Vercel, as two projects from this one repository, with a Supabase database.
+
+1. **Database.** Create a Supabase project. As its owner, run `db/schema.sql` and then `db/roles.sql`. Give the app role a login: `ALTER ROLE ledgerproof_app WITH LOGIN PASSWORD '<a long random password>';`
+2. **Demo data.** Load the demo users once as the owner: from `api`, set `OWNER_DATABASE_URL` for that single command and run `npm run seed`.
+3. **API project** (root directory `api`). Environment variables: `DATABASE_URL` (see Settings), `JWT_SECRET` (64 hex characters) and `ALLOWED_ORIGINS` (the web app's address). `src/index.js` must be the only entry file Vercel finds, which is why the app itself lives in `src/create-app.js`.
+4. **Web project** (root directory `web`). Set `VITE_API_URL` to the API's address, and the same address in `connect-src` of `web/vercel.json`, which also sets the security headers.
+5. Turn off Vercel Authentication on both projects, so the public addresses open without a Vercel login.
+6. **Check it.** From `api`, run `API_URL=<your API address> npm run attack`. It signs in as the demo users and tries the attacks listed in THREATS.md against the live API: forged tokens, reading someone else's data, a replayed payment, 20 simultaneous withdrawals. It moves a little demo money and puts it back.
+
+Free Supabase projects pause after about a week without use. Open the site shortly before it needs to work.
 
 ## The app
 
@@ -107,6 +122,9 @@ cd web && npm test && npm run build
 | `api/test/concurrency.test.js` | 20 simultaneous withdrawals let exactly 5 succeed; opposite transfers at the same moment do not deadlock |
 | `api/test/browser.test.js` | CORS allow-list, user list, ledger explorer, paying by account number |
 | `api/test/origins.test.js` | A bad `ALLOWED_ORIGINS` value stops the server |
+| `api/test/roles.test.js` | The restricted database role cannot tamper with balances, roles or history; a temp table cannot hide an unbalanced transaction; the API refuses a privileged role; Supabase's REST roles have no access |
+| `api/test/proxy.test.js` | A client cannot forge the address recorded in the audit log |
+| `api/test/db-config.test.js` | Supabase connections always verify TLS against the pinned root CA, whatever the URL says |
 | `api/test/threats.test.js` | Every test named in THREATS.md exists, and every `THREAT` test is listed there |
 | `web/src/money.test.js` | Rupee text to paise and back, with no floats |
 
@@ -122,11 +140,12 @@ Built and tested:
 - Reconciliation, ledger explorer and audit log.
 - Per-user idempotency keys with exact replay.
 - Login, role checks, ownership checks and the audit trail.
-- The browser app for all three roles.
+- The browser app for all three roles, with security headers and a strict Content-Security-Policy.
+- The API connects as a restricted database role with verified TLS.
 
 Not done:
 - No live deployment yet, so there are no live links.
 - The browser app has no end-to-end tests: it was checked by hand in a browser as all four demo users, and only its money helpers have automated tests.
-- The API should connect to the database as a restricted role, not a superuser, and there is no login rate limit or Content-Security-Policy yet.
+- There is no login rate limit yet.
 
 All known gaps are listed at the end of [THREATS.md](THREATS.md).
