@@ -47,7 +47,7 @@ function LedgerExplorer() {
               { label: "Amount", align: "num", render: (e) => `${signed(e.direction)}${formatRupees(e.amount_paise)}` },
               { label: "Balance after", align: "num", render: (e) => formatRupees(e.running_balance_paise) },
               { label: "Initiated by", render: (e) => e.initiated_by },
-              { label: "Reference", render: (e) => <code title={e.transaction_id}>{shortId(e.transaction_id)}</code> },
+              { label: "Reference", render: (e) => <code className="ref" title={e.transaction_id}>{shortId(e.transaction_id)}</code> },
             ]}
           />
         )}
@@ -90,7 +90,7 @@ function AuditLog() {
               { label: "Time", render: (e) => formatTime(e.created_at) },
               { label: "Outcome", render: (e) => <Badge value={e.outcome} /> },
               { label: "Role", render: (e) => e.actor_role ?? "anonymous" },
-              { label: "User", render: (e) => <code title={e.actor_user_id ?? ""}>{shortId(e.actor_user_id)}</code> },
+              { label: "User", render: (e) => <code className="ref" title={e.actor_user_id ?? ""}>{shortId(e.actor_user_id)}</code> },
               { label: "Action", render: (e) => e.action },
               { label: "Target", render: (e) => e.target ?? "" },
               { label: "IP", render: (e) => e.ip ?? "" },

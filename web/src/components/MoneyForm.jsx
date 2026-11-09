@@ -75,11 +75,23 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
           )}
         </label>
       ))}
-      <label className="check">
-        <input type="checkbox" checked={simulateDuplicate} onChange={(e) => setSimulateDuplicate(e.target.checked)} />
-        Simulate network retry / duplicate click
-      </label>
-      <p className="muted small">Idempotency-Key for this request: <code>{idempotencyKey}</code></p>
+      <div className="retry-sim">
+        <p className="retry-sim-title">Idempotency Retry Simulator</p>
+        <label className="switch">
+          <input
+            type="checkbox"
+            role="switch"
+            className="switch-input"
+            checked={simulateDuplicate}
+            onChange={(e) => setSimulateDuplicate(e.target.checked)}
+          />
+          <span className="switch-track" aria-hidden="true" />
+          Simulate network retry / duplicate click
+          <span className="switch-state" aria-hidden="true">{simulateDuplicate ? "ON" : "OFF"}</span>
+        </label>
+        <p className="muted small">When on, the same request is sent twice with one Idempotency-Key, and the server must pay once.</p>
+        <p className="muted small key-line">Idempotency-Key for this request: <code className="ref">{idempotencyKey}</code></p>
+      </div>
       <button type="submit" disabled={busy}>{busy ? "Sending…" : submitLabel}</button>
       {formError && <p className="error" role="alert">{formError}</p>}
       <div role="status" aria-live="polite">

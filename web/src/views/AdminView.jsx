@@ -60,7 +60,7 @@ export function AdminView() {
                 <div className="two-col">
                   <Section title="System vault">
                     <p className="muted small">Settlement account. Every deposit is paid from here; a negative balance is money issued to customers.</p>
-                    <p className="balance">{formatRupees(vault.balance_paise)}</p>
+                    <p className="balance money">{formatRupees(vault.balance_paise)}</p>
                     <p><code>{vault.account_number}</code> <Badge value={vault.status} /></p>
                   </Section>
                   <Section title="Deposit">
@@ -124,7 +124,7 @@ export function AdminView() {
                     columns={[
                       { label: "Email", render: (u) => u.email },
                       { label: "Role", render: (u) => <Badge value={u.role} /> },
-                      { label: "Id", render: (u) => <code title={u.id}>{shortId(u.id)}</code> },
+                      { label: "Id", render: (u) => <code className="ref" title={u.id}>{shortId(u.id)}</code> },
                       { label: "Created", render: (u) => formatTime(u.created_at) },
                     ]}
                   />

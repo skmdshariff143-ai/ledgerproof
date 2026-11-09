@@ -12,7 +12,8 @@ export function ReconcileBanner() {
           <div>
             <h2>{report.balanced ? "Total Debits == Total Credits (BALANCED ✓)" : "Books do NOT balance ✗"}</h2>
             <p>
-              Debits {formatRupees(report.totals.debits_paise)} · Credits {formatRupees(report.totals.credits_paise)} ·{" "}
+              Debits <span className="money">{formatRupees(report.totals.debits_paise)}</span> · Credits{" "}
+              <span className="money">{formatRupees(report.totals.credits_paise)}</span> ·{" "}
               {report.totals.entries} ledger entries · {report.accountsChecked} accounts re-checked
             </p>
             {report.problems.length > 0 && (

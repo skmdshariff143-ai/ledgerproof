@@ -50,7 +50,7 @@ export function HolderView() {
                 <div className="balance-card">
                   <div>
                     <p className="muted small">Available balance</p>
-                    <p className="balance">{formatRupees(account.balance_paise)}</p>
+                    <p className="balance money">{formatRupees(account.balance_paise)}</p>
                   </div>
                   <div>
                     <p className="muted small">Account number</p>
@@ -123,7 +123,7 @@ function Statement({ state }) {
               { label: "Entry", render: (e) => <Badge value={e.direction} /> },
               { label: "Amount", align: "num", render: (e) => `${signed(e.direction)}${formatRupees(e.amount_paise)}` },
               { label: "Balance after", align: "num", render: (e) => formatRupees(e.running_balance_paise) },
-              { label: "Reference", render: (e) => <code title={e.transaction_id}>{shortId(e.transaction_id)}</code> },
+              { label: "Reference", render: (e) => <code className="ref" title={e.transaction_id}>{shortId(e.transaction_id)}</code> },
             ]}
           />
         )}
