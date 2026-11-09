@@ -1,3 +1,4 @@
+import express from "express";
 import pg from "pg";
 import { createApp } from "./create-app.js";
 import { parseAllowedOrigins } from "./origins.js";
@@ -24,4 +25,8 @@ const onVercel = process.env.VERCEL === "1";
 const ready = onVercel ? assertRestrictedRole(pool) : Promise.resolve();
 ready.catch((err) => console.error(err.message));
 
-export default createApp(pool, { jwtSecret: JWT_SECRET, allowedOrigins, trustProxy: onVercel ? 1 : false, ready });
+// Vercel only accepts an entry file that imports express itself, so the app from create-app.js is mounted
+// inside an app created here. The mounted app keeps its own settings, including "trust proxy".
+const app = express();
+app.use(createApp(pool, { jwtSecret: JWT_SECRET, allowedOrigins, trustProxy: onVercel ? 1 : false, ready }));
+export default app;
