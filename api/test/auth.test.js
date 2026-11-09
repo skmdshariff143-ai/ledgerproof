@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import jwt from "jsonwebtoken";
 import { seed } from "../scripts/seed.js";
-import { accountOf, auditRows, call, pool, tokenFor, useSeededServer } from "./helpers.js";
+import { accountOf, auditRows, call, jwtSecret, pool, tokenFor, useSeededServer } from "./helpers.js";
 
 useSeededServer();
 
@@ -24,7 +24,7 @@ test("THREAT bad login: a wrong password gets 401 and is audited as denied", asy
   assert.equal((await auditRows("denied", "login")).length, 1);
 });
 
-test("THREAT no or forged token: missing, wrong-secret and alg:none tokens all get 401", async () => {
+test("THREAT no or forged token: missing, wrong-secret, alg:none and wrong-algorithm tokens all get 401", async () => {
   const alice = (await pool.query("SELECT id FROM users WHERE email = 'alice@ledgerline.com'")).rows[0].id;
   const forged = jwt.sign({}, "not-the-server-secret", { algorithm: "HS256", subject: alice });
   const encode = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
@@ -32,6 +32,9 @@ test("THREAT no or forged token: missing, wrong-secret and alg:none tokens all g
   assert.equal((await call("GET", "/api/accounts")).status, 401);
   assert.equal((await call("GET", "/api/accounts", { token: forged })).status, 401);
   assert.equal((await call("GET", "/api/accounts", { token: unsigned })).status, 401);
+  // Signed with the REAL secret but another algorithm: only the HS256 pin in authenticate() refuses it.
+  const otherAlgorithm = jwt.sign({}, jwtSecret, { algorithm: "HS512", subject: alice });
+  assert.equal((await call("GET", "/api/accounts", { token: otherAlgorithm })).status, 401);
 });
 
 test("THREAT stale role: the role comes from the database on each request, not from the token", async () => {

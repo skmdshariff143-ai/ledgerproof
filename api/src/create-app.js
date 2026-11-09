@@ -3,14 +3,14 @@ import express from "express";
 import { audit } from "./audit.js";
 import { allowRoles, authenticate, deny, login } from "./auth.js";
 import { inTransaction } from "./db.js";
-import { fail, HTTP_STATUS, UUID } from "./errors.js";
+import { fail, HTTP_STATUS, isUuid } from "./errors.js";
 import { transfer, validateAmountAndKey } from "./transfer.js";
 
 const ALL_ROLES = ["admin", "account_holder", "auditor"];
 const ACCOUNT_COLUMNS = "id, account_number, account_type, owner_id, status, balance_paise::text AS balance_paise, created_at";
 
 function requireUuid(value, name) {
-  if (typeof value !== "string" || !UUID.test(value)) throw fail("INVALID_INPUT", `${name} must be a lowercase UUID`);
+  if (!isUuid(value)) throw fail("INVALID_INPUT", `${name} must be a lowercase UUID`);
 }
 
 // Account numbers are meant to be shared with whoever pays you, so an unknown one is a plain 404.
@@ -140,7 +140,7 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
       toAccountId = await accountIdByNumber(pool, b.toAccountNumber);
     }
     // Paying the vault is a withdrawal; it must go through the withdrawal route, not this one.
-    if (UUID.test(toAccountId ?? "") && (await findAccount(pool, toAccountId))?.account_type === "system_vault") {
+    if (isUuid(toAccountId) && (await findAccount(pool, toAccountId))?.account_type === "system_vault") {
       throw fail("INVALID_INPUT", "transfers must go to a user account");
     }
     return moveMoney(req, b.fromAccountId, toAccountId, b.amountPaise);

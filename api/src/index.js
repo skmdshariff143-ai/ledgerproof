@@ -31,5 +31,6 @@ ready.catch((err) => console.error(err.message));
 // Vercel only accepts an entry file that imports express itself, so the app from create-app.js is mounted
 // inside an app created here. The mounted app keeps its own settings, including "trust proxy".
 const app = express();
+app.disable("x-powered-by");
 app.use(createApp(pool, { jwtSecret: JWT_SECRET, allowedOrigins, trustProxy: onVercel ? 1 : false, ready }));
 export default app;

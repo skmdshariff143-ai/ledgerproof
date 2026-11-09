@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { audit } from "./audit.js";
-import { fail, UUID } from "./errors.js";
+import { fail, isUuid } from "./errors.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
 const TOKEN_LIFETIME = "1h";
@@ -35,7 +35,7 @@ export function authenticate(pool, secret) {
     } catch {
       throw fail("UNAUTHENTICATED", "a valid bearer token is required");
     }
-    if (!UUID.test(userId ?? "")) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
+    if (!isUuid(userId)) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
     const { rows } = await pool.query("SELECT id, email, role FROM users WHERE id = $1", [userId]);
     if (rows.length === 0) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
     req.user = rows[0];

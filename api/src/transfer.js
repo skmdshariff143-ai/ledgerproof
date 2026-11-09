@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { audit } from "./audit.js";
-import { fail, UUID } from "./errors.js";
+import { fail, isUuid } from "./errors.js";
 
 const UNIQUE_VIOLATION = "23505";
 const MAX_KEY_LENGTH = 200;
@@ -14,9 +14,9 @@ export function validateAmountAndKey({ amountPaise, idempotencyKey }) {
 }
 
 function validate({ actor, from, to, amountPaise, idempotencyKey }) {
-  if (!UUID.test(actor?.id ?? "")) throw fail("INVALID_INPUT", "actor is required");
+  if (!isUuid(actor?.id)) throw fail("INVALID_INPUT", "actor is required");
   validateAmountAndKey({ amountPaise, idempotencyKey });
-  if (!UUID.test(from) || !UUID.test(to)) throw fail("INVALID_INPUT", "account ids must be lowercase UUIDs");
+  if (!isUuid(from) || !isUuid(to)) throw fail("INVALID_INPUT", "account ids must be lowercase UUIDs");
   if (from === to) throw fail("INVALID_INPUT", "from and to must differ");
 }
 

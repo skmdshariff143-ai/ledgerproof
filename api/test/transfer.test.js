@@ -171,6 +171,9 @@ test("THREAT malformed ids: bad UUIDs and case variants are rejected without lea
   await assert.rejects(transfer(appPool, { ...base, to: "not-a-uuid" }), { code: "INVALID_INPUT" });
   await assert.rejects(transfer(appPool, { ...base, to: alice.toUpperCase() }), { code: "INVALID_INPUT" });
   await assert.rejects(transfer(appPool, { ...base, idempotencyKey: "x".repeat(201) }), { code: "INVALID_INPUT" });
+  // An array of one id turns into that id as text, so it used to pass the check and reach the database.
+  await assert.rejects(transfer(appPool, { ...base, to: [bob] }), { code: "INVALID_INPUT" });
+  await assert.rejects(transfer(appPool, { ...base, from: [alice] }), { code: "INVALID_INPUT" });
 });
 
 test("THREAT frozen account: a frozen account can neither send nor receive", async () => {
@@ -190,4 +193,52 @@ test("transaction type is derived from the locked accounts, and balance_paise ma
   assert.deepEqual(types.rows.map((r) => r.type).sort(), ["deposit", "transfer", "withdrawal"]);
   const cached = await pool.query("SELECT id, balance_paise::int AS b FROM accounts");
   for (const row of cached.rows) assert.equal(row.b, await balance(row.id));
+});
+
+// Polls until some transaction is blocked waiting for a row lock taken by a FOR NO KEY UPDATE query.
+async function waitForLockWait() {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FOR NO KEY UPDATE%' AND pid <> pg_backend_pid()",
+    );
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("the transfer never started waiting for a lock");
+}
+
+test("THREAT lock order: a transfer locks the lower account id first, so it never holds the higher id while it waits", async () => {
+  // The HIGHER id is created first, so a scan without ORDER BY would return (and lock) it first.
+  const HIGH = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const LOW = "00000000-0000-4000-8000-000000000001";
+  for (const [id, email] of [[HIGH, "high@test.local"], [LOW, "low@test.local"]]) {
+    const user = await pool.query("INSERT INTO users (email, password_hash, role) VALUES ($1, 'x', 'account_holder') RETURNING id", [email]);
+    await pool.query("INSERT INTO accounts (id, account_type, owner_id) VALUES ($1, 'user_checking', $2)", [id, user.rows[0].id]);
+  }
+  await fund(HIGH, 1000, "lock-order-fund");
+
+  // Precondition: with no ORDER BY, the lookup returns the higher id first. If the planner ever changes
+  // that, the test could no longer tell a missing ORDER BY from a present one, so fail loudly here.
+  const unordered = await pool.query("SELECT id FROM accounts WHERE id = ANY($1::uuid[])", [[HIGH, LOW]]);
+  assert.equal(unordered.rows[0].id, HIGH, "setup no longer puts the higher id first without ORDER BY; the test cannot discriminate");
+
+  const holder = await pool.connect();
+  const probe = await pool.connect();
+  let pending;
+  try {
+    await holder.query("BEGIN");
+    await holder.query("SELECT 1 FROM accounts WHERE id = $1 FOR NO KEY UPDATE", [LOW]);
+    pending = transfer(appPool, { actor, from: HIGH, to: LOW, amountPaise: 100, idempotencyKey: "lock-order" });
+    pending.catch(() => {}); // side handler: a fast failure must not surface as an unhandled rejection; it is awaited below
+    await waitForLockWait();
+    // The transfer is now blocked on the lower id. The higher id must still be free.
+    await probe.query("SELECT 1 FROM accounts WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [HIGH]);
+  } finally {
+    await holder.query("ROLLBACK");
+    holder.release();
+    probe.release();
+    await pending?.catch(() => {});
+  }
+  assert.equal((await pending).replayed, false);
+  assert.equal(await balance(LOW), 100);
 });

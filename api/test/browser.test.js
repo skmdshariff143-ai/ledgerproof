@@ -103,3 +103,16 @@ test("THREAT account number probe: malformed requests get the same answer whethe
     assert.equal(unknown.body.error.message, real.body.error.message);
   }
 });
+
+test("an id wrapped in an array is a 400 over HTTP, not a 500", async () => {
+  const alice = await accountOf("alice@ledgerline.com");
+  const bob = await accountOf("bob@ledgerline.com");
+  const res = await call("POST", "/api/transactions/transfer", {
+    token: await tokenFor("alice"),
+    body: { fromAccountId: alice.id, toAccountId: [bob.id], amountPaise: 100 },
+    headers: { "Idempotency-Key": "array-id" },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error.code, "INVALID_INPUT");
+  assert.equal((await accountOf("alice@ledgerline.com")).balance, 1_000_000);
+});

@@ -56,6 +56,10 @@ test("THREAT app role cannot tamper: no balance, owner, role or history edits, n
     "DROP TABLE audit_log",
     "SET session_replication_role = replica",
     "CREATE TABLE public.sneaky (a int)",
+    // History rows: the role may add them but not choose their id or their timestamp.
+    "INSERT INTO audit_log (action, outcome, created_at) VALUES ('x', 'success', '2000-01-01')",
+    "INSERT INTO ledger_entries (id, transaction_id, account_id, direction, amount_paise) VALUES (999999, gen_random_uuid(), gen_random_uuid(), 'credit', 1)",
+    "INSERT INTO transactions (id, type, initiated_by) VALUES (gen_random_uuid(), 'deposit', (SELECT id FROM users LIMIT 1))",
   ];
   const before = await totalBalance();
   // Postgres makes a GRANT by a role without grant option a warning and a no-op, not an error; the

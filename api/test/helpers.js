@@ -10,7 +10,7 @@ export const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const readSql = (file) => readFileSync(new URL(`../../db/${file}`, import.meta.url), "utf8");
 const schemaSql = readSql("schema.sql");
 export const rolesSql = readSql("roles.sql");
-const jwtSecret = randomBytes(32).toString("hex");
+export const jwtSecret = randomBytes(32).toString("hex");
 export const ALLOWED_ORIGIN = "http://localhost:5173";
 const APP_ROLE_PASSWORD = "test-only-password";
 let server, baseUrl;

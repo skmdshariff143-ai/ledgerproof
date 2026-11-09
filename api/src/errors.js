@@ -11,7 +11,10 @@ export const HTTP_STATUS = {
   ACCOUNT_FROZEN: 422,
 };
 
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// A lowercase UUID string. Not just UUID.test(): an array of one id turns into that id as text and would pass.
+export const isUuid = (value) => typeof value === "string" && UUID.test(value);
 
 export function fail(code, message) {
   return Object.assign(new Error(message), { code });

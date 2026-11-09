@@ -19,7 +19,14 @@ GRANT USAGE ON SCHEMA public TO ledgerproof_app;
 -- Read what the routes read; write only what they write. There is no UPDATE, DELETE or TRUNCATE
 -- on any table except accounts.status, so the app cannot edit users, roles, history or balances.
 GRANT SELECT ON users, accounts, transactions, ledger_entries, idempotency_keys, audit_log TO ledgerproof_app;
-GRANT INSERT ON transactions, ledger_entries, idempotency_keys, audit_log TO ledgerproof_app;
+-- Inserts name their columns, so the role cannot choose an id (which could squat on a future ledger id)
+-- or a created_at (which would back-date history). Both are defaults. The REVOKE first makes a re-run
+-- of this file replace an older, table-wide grant.
+REVOKE INSERT ON transactions, ledger_entries, idempotency_keys, audit_log FROM ledgerproof_app;
+GRANT INSERT (type, initiated_by) ON transactions TO ledgerproof_app;
+GRANT INSERT (transaction_id, account_id, direction, amount_paise) ON ledger_entries TO ledgerproof_app;
+GRANT INSERT (user_id, key, request_hash, transaction_id) ON idempotency_keys TO ledgerproof_app;
+GRANT INSERT (actor_user_id, actor_role, action, target, ip, details, outcome) ON audit_log TO ledgerproof_app;
 -- Admins open accounts (type and owner only; the rest are defaults) and freeze them (status only).
 -- Balances move only through the ledger trigger, which runs as the owner.
 GRANT INSERT (account_type, owner_id) ON accounts TO ledgerproof_app;
