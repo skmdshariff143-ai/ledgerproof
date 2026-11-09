@@ -31,7 +31,13 @@ async function call(method, path, { token, body, key } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    // Not JSON: a hosting platform's firewall can answer before the API does.
+  }
+  return { status: res.status, body: parsed };
 }
 
 function check(name, ok, detail = "") {
@@ -58,7 +64,8 @@ const forged = jwt.sign({}, "not-the-server-secret", { algorithm: "HS256", subje
 check("token signed with another secret is refused (401)", (await call("GET", "/api/accounts", { token: forged })).status === 401);
 const b64 = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
 const unsigned = `${b64({ alg: "none", typ: "JWT" })}.${b64({ sub: alice.owner_id })}.`;
-check("unsigned alg:none token is refused (401)", (await call("GET", "/api/accounts", { token: unsigned })).status === 401);
+// The API answers 401; on Vercel the platform firewall may refuse such a token first with a 403.
+check("unsigned alg:none token is refused (401, or 403 from the platform firewall)", [401, 403].includes((await call("GET", "/api/accounts", { token: unsigned })).status));
 
 // 2. Reaching someone else's data or powers.
 check("Alice cannot read Bob's statement (403)", (await call("GET", `/api/accounts/${bob.id}/statement`, { token: tokens.alice })).status === 403);

@@ -2,6 +2,15 @@
 
 Money movement with a ledger you can prove. Solo submission for the Snovasys Fresher Hiring Challenge 2026, problem "LedgerLine".
 
+## Live
+
+| | Address |
+|---|---|
+| App | https://ledgerproof-web.vercel.app |
+| API | https://ledgerproof-api.vercel.app (for example `GET /api/me` answers 401 without a token) |
+
+Sign in with the demo logins below (the login screen has a one-click button for each). The ledger on the live site is append-only and already contains the activity of the live attack checks (`npm run attack`), so you will see extra transfers and withdrawals that net to zero.
+
 ```
 Browser app (web/, React + Vite)  ->  API (api/, Express + pg)  ->  PostgreSQL (db/schema.sql)
    role-based screens                    JWT, roles, ownership,        triggers and constraints
@@ -142,9 +151,10 @@ Built and tested:
 - Login, role checks, ownership checks and the audit trail.
 - The browser app for all three roles, with security headers and a strict Content-Security-Policy.
 - The API connects as a restricted database role with verified TLS.
+- Deployment on Vercel and Supabase. On 2026-11-09 the 16 live attack checks passed against the deployed API (forged tokens, reading another user's data, a replayed payment, 20 simultaneous withdrawals letting exactly 5 succeed, a balanced reconcile), and the app was checked by hand in a browser as the account holder, auditor and admin.
 
 Not done:
-- No live deployment yet, so there are no live links.
+- The live site runs on free tiers: the first request after a quiet period is slow (serverless start), and Supabase pauses a free project after about a week without use.
 - The browser app has no end-to-end tests: it was checked by hand in a browser as all four demo users, and only its money helpers have automated tests.
 - There is no login rate limit yet.
 
