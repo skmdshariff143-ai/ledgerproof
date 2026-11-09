@@ -34,7 +34,7 @@
 
 **Idempotency is rechecked after the lock.** A retry that arrives while the first request is still running would otherwise wait for the lock, find the balance spent, and report "insufficient funds" for a payment that succeeded. Rechecking the key after the lock makes it replay the result instead.
 
-**Isolation is pinned to READ COMMITTED.** The balance read must see the latest committed rows after the lock is granted. Under REPEATABLE READ the snapshot would predate the wait and could miss another spend.
+**Isolation is pinned to READ COMMITTED.** The balance read must see the latest committed rows after the lock is granted. Under REPEATABLE READ the snapshot would predate the wait, so a request that had waited for another spend to commit would fail with a serialization error (40001) instead of re-reading the balance. `THREAT isolation` fails without the explicit `BEGIN ISOLATION LEVEL READ COMMITTED`.
 
 **The token holds only the user id.** The JWT is signed and checked with HS256 only, which also rejects `alg: none`. On every request `authenticate` looks the user up again, so a changed role or a deleted user takes effect at once. A role kept in the token would keep working until the token expired.
 
@@ -66,7 +66,7 @@
 
 **The browser app is a client, not a gatekeeper.** Each role sees a different screen, but that is convenience. Every request is checked by the server from the verified token, so opening another role's screen (or calling its URLs by hand) gets a 403 and an audit row.
 
-**The login token lives in sessionStorage.** It disappears when the tab closes and is sent as a bearer header, so there are no cookies to forge a request with. The price is that any script running on the page could read it. The defense is that the app renders all text through React (no `dangerouslySetInnerHTML`, `innerHTML` or `eval`), so data from the API cannot become script. A strict Content-Security-Policy would add a second layer and is not set yet.
+**The login token lives in sessionStorage.** It disappears when the tab closes and is sent as a bearer header, so there are no cookies to forge a request with. The price is that any script running on the page could read it. The defense is that the app renders all text through React (no `dangerouslySetInnerHTML`, `innerHTML` or `eval`), so data from the API cannot become script. A strict Content-Security-Policy, set by `web/vercel.json`, adds a second layer: the page may load scripts and styles only from itself and talk only to itself and the API.
 
 **Idempotency is visible in the UI.** Every money form creates a fresh UUID v4 `Idempotency-Key`. "Simulate network retry" sends the request twice with that key at the same moment, so the page shows the server paying once and answering the second call as a replay.
 

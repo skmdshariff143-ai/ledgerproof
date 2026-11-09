@@ -8,7 +8,7 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 
 ## Authentication, authorization and audit trail
 
-| Threat | API defense | DB defense | Test (auth.test.js) |
+| Threat | API defense | DB defense | Test |
 |---|---|---|---|
 | Alice moves money out of Bob's account (IDOR) | Transfer route compares the source account's `owner_id` with the logged-in user; 403 plus a `denied` audit row | `owner_id` immutable (`accounts_guard`) | `THREAT IDOR transfer` |
 | Alice reads Bob's statement, or probes which account ids exist | Statement route checks ownership; a missing account gets the same 403 as a foreign one; both audited | none | `THREAT IDOR statement` |
@@ -45,11 +45,10 @@ Only threats with a passing test are listed. Tests named `THREAT ...` live in:
 
 | Threat | API defense | DB defense | Test |
 |---|---|---|---|
-| Books go out of balance (debits != credits) | not built yet | Deferred constraint trigger `ledger_entries_balanced` rejects the transaction at COMMIT | `THREAT unbalanced books` |
-| Zero or negative amounts | not built yet | `CHECK (amount_paise > 0)` | `THREAT bad amounts` |
-| Past ledger rows edited or deleted | not built yet | Triggers block UPDATE, DELETE, TRUNCATE on `ledger_entries` | `THREAT tampering: ledger entries` |
-| Audit trail edited or deleted | not built yet | Triggers block UPDATE, DELETE, TRUNCATE on `audit_log` | `THREAT tampering: audit log` |
-| Same request pays twice | not built yet | `idempotency_keys (user_id, key)` is the primary key | `THREAT double payment` |
+| Books go out of balance (debits != credits) | `transfer()` always writes one debit and one credit of the same amount | Deferred constraint trigger `ledger_entries_balanced` rejects the transaction at COMMIT | `THREAT unbalanced books` |
+| Zero or negative amounts | `validate()` rejects non-integer, zero and negative amounts with 400 | `CHECK (amount_paise > 0)` | `THREAT bad amounts` |
+| Past ledger rows edited or deleted | No route updates or deletes ledger rows, and the API's database role has no UPDATE or DELETE on them | Triggers block UPDATE, DELETE, TRUNCATE on `ledger_entries` | `THREAT tampering: ledger entries` |
+| Same request pays twice | `transfer()` stores the key in the same transaction as the money and replays the first answer | `idempotency_keys (user_id, key)` is the primary key | `THREAT double payment` |
 | Overdraft: spend more than the balance | `transfer()` checks the locked `balance_paise`; only the `system_vault` may go below zero | `CHECK user_balance_not_negative` on `accounts` | `THREAT overdraft`, `THREAT overdraft at the database` |
 | Overdraft by racing requests | Both account rows are locked (`FOR NO KEY UPDATE`) before the balance is read | balance UPDATE in `ledger_entries_apply` row-locks the account; `user_balance_not_negative` | `THREAT concurrent overdraft` |
 | 20 simultaneous withdrawals of Rs 1,000 from Rs 5,000 overdraw the account | Both account rows locked before the balance is read; losers get a clean 422 `INSUFFICIENT_FUNDS`, never a 500 | `user_balance_not_negative` | `THREAT concurrent overdraft over HTTP` (concurrency.test.js: exactly 5 succeed, balance 0, reconcile balanced) |
@@ -85,7 +84,7 @@ Known gaps:
 - `accounts_guard` still trusts `pg_trigger_depth() >= 2` to recognise the ledger trigger. That is safe only because no role except the schema owner may update balances; `THREAT temp trigger mint` is the test that keeps it so.
 - `transfer()` itself does not check ownership; the HTTP route does. Any new caller of `transfer()` must authorize first.
 - Paying by account number reveals two things to a user who has funds: whether a number exists (404 for unknown) and whether its account is frozen (422 `ACCOUNT_FROZEN`, after the funds check). Account numbers are meant to be shared with payers and a sender needs to learn why a payment failed, so this is accepted rather than hidden. It exposes no balances or owners. Found by the security audit; the owner may choose to return one generic error instead.
-- The browser app keeps the login token in `sessionStorage`, readable by any script on the page. Mitigation: all text goes through React, and the source contains no `dangerouslySetInnerHTML`, `innerHTML` or `eval` (checked by searching `web/src`, not by an automated test). No Content-Security-Policy header is set yet.
+- The browser app keeps the login token in `sessionStorage`, readable by any script on the page. Mitigation: all text goes through React, and the source contains no `dangerouslySetInnerHTML`, `innerHTML` or `eval` (checked by searching `web/src`, not by an automated test). A strict Content-Security-Policy is set by `web/vercel.json`; it was seen as a response header on the live site and caused no console violations in a browser, but no automated test covers it.
 - The browser app has no end-to-end tests; it was checked by hand in a browser for all four roles. Only the money helpers have automated tests.
 - The restricted role stops edits to balances, roles, owners and history, but it must be able to INSERT into the ledger, transactions, idempotency and audit tables. Anyone who could run arbitrary SQL as that role (through an SQL injection or a leaked connection string) could insert forged but balanced ledger rows, audit rows or idempotency keys. All SQL in the API uses bound parameters, and reconcile would still show a ledger that does not match the stored balances, but the role cannot prevent forged inserts by design.
 - A database session can still create temp tables (PUBLIC has that right on every Postgres database). The functions that read tables pin their `search_path` so temp tables cannot shadow them, but queries typed by someone with SQL access to the app role are not protected from that.
