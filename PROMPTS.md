@@ -101,3 +101,12 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 - **What was done instead:** The factory is now `create-app.js`, so `index.js` is the only candidate. DECISIONS.md records why the file is not called `app.js`.
 - **How verified:** An import check shows `index.js` default-exports a function with `listen`, and 88/88 API tests pass. The fix is **not yet verified on the live site**: it needs a push, and the API's secrets are not set yet.
 - **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/37ed7eb
+
+## 2026-11-09: My first fix for the Vercel entry point was incomplete (deployment)
+
+- **Asked:** Make the API deployable on Vercel after its first build crashed.
+- **What the AI produced:** After the runtime log said `src/app.js` was loaded as the entry and exported no app, I renamed the file to `create-app.js` so `src/index.js` would be the only candidate. I checked that `index.js` default-exports a working app and that all 88 tests passed, and reported the fix as ready for a push.
+- **What was wrong:** I had fixed the symptom in the log without reading the rule behind it. The next build failed outright: `No entrypoint found which imports express. Found possible entrypoint: src/index.js`. Vercel's detector only accepts a file that imports `express` itself, so an entry that gets its app from another module is rejected. The first crash and this build failure were two halves of one rule. My local checks could not catch either, because nothing locally runs Vercel's detection. I found it by reading the build log of the new deployment.
+- **What was done instead:** `index.js` imports `express`, creates an app and mounts the app from `create-app.js` inside it. I tested that wiring locally the way production runs it (`VERCEL=1`, restricted database role): `/api/me` answers a clean 401, a forwarded client address lands in the audit log, and a privileged database role is refused.
+- **How verified:** 88/88 API tests pass and the local production-mode checks above pass. **Not verified on the live site yet:** the fix needs a push, and the API's secrets are not set.
+- **Commit:** https://github.com/skmdshariff143-ai/ledgerproof/commit/ffb5aa6
