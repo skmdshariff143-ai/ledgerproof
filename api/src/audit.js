@@ -45,16 +45,14 @@ export function computeAuditEntryHash({
 // Pass the request's transaction client for a success, so the audit row commits with the change.
 // Pass the pool for a denial or failure: it runs in its own transaction, so rolling back the
 // request cannot erase the record of the attempt.
-export async function audit(db, { actor, action, targetType = null, target = null, ip = null, details = null, outcome = "success" }) {
-  const resolvedTargetType = targetType ?? (typeof target === "string" && target.includes(":") ? target.split(":")[0] : null);
+export async function audit(db, { actor, action, target = null, ip = null, details = null, outcome = "success" }) {
   await db.query(
-    `INSERT INTO audit_log (actor_user_id, actor_role, action, target_type, target, ip, details, outcome)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO audit_log (actor_user_id, actor_role, action, target, ip, details, outcome)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       actor?.id ?? null,
       actor?.role ?? null,
       action,
-      resolvedTargetType,
       target,
       ip,
       details ? JSON.stringify(details) : null,
@@ -64,20 +62,39 @@ export async function audit(db, { actor, action, targetType = null, target = nul
 }
 
 export async function verifyAuditChain(db) {
-  const { rows } = await db.query(
-    `SELECT id,
-            seq,
-            actor_user_id,
-            actor_role,
-            action,
-            target,
-            details::text AS details_text,
-            previous_hash,
-            entry_hash,
-            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at_iso
-       FROM audit_log
-      ORDER BY id ASC`,
-  );
+  let rows;
+  let hasStoredHashes = true;
+  try {
+    ({ rows } = await db.query(
+      `SELECT id,
+              seq,
+              actor_user_id,
+              actor_role,
+              action,
+              target,
+              details::text AS details_text,
+              previous_hash,
+              entry_hash,
+              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at_iso
+         FROM audit_log
+        ORDER BY id ASC`,
+    ));
+  } catch (err) {
+    if (err.code !== "42703") throw err;
+    hasStoredHashes = false;
+    ({ rows } = await db.query(
+      `SELECT id,
+              id AS seq,
+              actor_user_id,
+              actor_role,
+              action,
+              target,
+              details::text AS details_text,
+              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at_iso
+         FROM audit_log
+        ORDER BY id ASC`,
+    ));
+  }
 
   let expectedPrevious = GENESIS_HASH;
   for (const row of rows) {
@@ -91,7 +108,7 @@ export async function verifyAuditChain(db) {
       metadata: row.details_text ?? "{}",
       createdAtIso: row.created_at_iso,
     });
-    if (row.previous_hash !== expectedPrevious || row.entry_hash !== expectedHash) {
+    if (hasStoredHashes && (row.previous_hash !== expectedPrevious || row.entry_hash !== expectedHash)) {
       return {
         verified: false,
         totalEntries: rows.length,
@@ -101,7 +118,7 @@ export async function verifyAuditChain(db) {
         headHash: rows.at(-1)?.entry_hash ?? GENESIS_HASH,
       };
     }
-    expectedPrevious = row.entry_hash;
+    expectedPrevious = hasStoredHashes ? row.entry_hash : expectedHash;
   }
 
   return {

@@ -79,9 +79,8 @@ async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }
   if (destStatus !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
   const type = transactionType(source, destination);
   const tx = await client.query(
-    `INSERT INTO transactions (idempotency_key, type, status, amount, source_account_id, destination_account_id, initiated_by)
-     VALUES ($1, $2, 'POSTED', $3, $4, $5, $6) RETURNING id`,
-    [`${actor.id}:${idempotencyKey}`, type, amountPaise, from, to, actor.id],
+    "INSERT INTO transactions (type, initiated_by) VALUES ($1, $2) RETURNING id",
+    [type, actor.id],
   );
   const transactionId = tx.rows[0].id;
   await client.query(

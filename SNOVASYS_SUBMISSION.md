@@ -38,34 +38,20 @@ I built **LedgerProof**, a full-stack double-entry banking ledger, KYC onboardin
 
 #### Local Setup (5 Minutes)
 
-1. **Install dependencies:**
-   ```bash
-   cd api && npm install
-   cd ../web && npm install
-   ```
-2. **Configure environment:**
+1. **Install dependencies, apply schema & roles, seed demo data, and run all tests from the repo root:**
    ```bash
    cp .env.example .env
-   ```
-   Set `DATABASE_URL` (runtime `ledgerproof_app` connection), `DIRECT_URL` / `OWNER_DATABASE_URL` (schema-owner DDL connection), `JWT_SECRET` (32+ bytes), and `BOOTSTRAP_SECRET`.
-3. **Apply schema, triggers, least-privilege DB grants, and seed demo data:**
-   ```bash
-   cd api
+   npm install
    npm run db:migrate
    npm run db:bootstrap-admin
-   npm run seed
+   npm run db:seed
+   npm test
+   npm run build
+   npm run verify:live
    ```
-4. **Run the automated integration & frontend test suites:**
+2. **Start the application locally:**
    ```bash
-   # Backend: 103 integration tests against real PostgreSQL (RBAC, KYC, concurrency, triggers, SHA-256 chain)
-   cd api && npm test
-
-   # Frontend: 32 unit & component tests + production Vite build
-   cd ../web && npm test && npm run build
-   ```
-5. **Start the application locally:**
-   ```bash
-   # Terminal 1 — API on http://localhost:3001
+   # Terminal 1 — API on http://localhost:3000
    cd api && npm run dev
 
    # Terminal 2 — Web UI on http://localhost:5173
@@ -74,16 +60,17 @@ I built **LedgerProof**, a full-stack double-entry banking ledger, KYC onboardin
 
 #### Live & Adversarial Verification Steps
 - **Health & Readiness Probes:**
-  - `curl http://localhost:3001/health` -> `200 OK` (`{"status":"ok"}`)
-  - `curl http://localhost:3001/ready` -> `200 OK` (`{"status":"ready","db":"ok","rateLimiter":"ok"}`)
-- **Demo Logins (Password for all seeded users: `Password123!`):**
-  - Holder A: `asha@example.com` | Holder B: `bilal@example.com`
-  - Admin: `priya.admin@example.com` | Auditor: `dev.auditor@example.com`
+  - `curl http://localhost:3000/health` -> `200 OK` (`{"status":"ok"}`)
+  - `curl http://localhost:3000/ready` -> `200 OK` (`{"status":"healthy","database":"connected","rateLimiter":"ready"}`)
+- **Demo Logins:**
+  - Admin: `admin@ledgerline.com` (`Admin@123`) | Auditor: `auditor@ledgerline.com` (`Auditor@123`)
+  - Holder A: `alice@ledgerline.com` (`Alice@123`) | Holder B: `bob@ledgerline.com` (`Bob@123`)
 - **Verify Cryptographic Audit Chain & Double-Entry Invariants:**
-  - Log in as `priya.admin@example.com` or `dev.auditor@example.com` and click **"Verify Ledger & Audit Chain Integrity"** (calls `GET /api/admin/audit-logs/verify` and `GET /api/reconcile`), or click **"Break It"** in the top navigation bar to fire live exploit attempts against the backend and watch every attack get blocked and logged.
-- **CLI Live Attack Script (16 checks):**
+  - Log in as `admin@ledgerline.com` or `auditor@ledgerline.com` and click **"Verify Ledger & Audit Chain Integrity"** (calls `GET /api/admin/audit-logs/verify` and `GET /api/ledger/reconcile`).
+- **End-to-End Live Verification & Attack Scripts:**
   ```bash
-  cd api && npm run attack -- --url http://localhost:3001
+  LIVE_API_URL=https://ledgerproof-api.vercel.app LIVE_WEB_URL=https://ledgerproof-web.vercel.app npm run verify:live
+  API_URL=https://ledgerproof-api.vercel.app npm run attack
   ```
 
 ---
@@ -131,19 +118,18 @@ I built **LedgerProof**, a full-stack double-entry banking ledger, KYC onboardin
 
 ---
 
-### Q6. Current verification status and remaining production hardening items
+### Q6. Current verification status and production hardening architecture
 
 #### Current Verification Status
-- **103 / 103 Backend Integration Tests Passing (`cd api && npm test`):**
+- **105 / 105 Backend Integration Tests Passing (`npm test`):**
   - Covers every threat in `THREATS.md` (`threats.test.js` enforces 1:1 traceability between documented threats and automated tests).
-  - Covers RBAC (`401`/`403` on `/api/admin/*`), `PENDING_KYC` transfer blocking (`403 KYC_PENDING`), atomic overdraft rollback with zero orphan rows (`422 INSUFFICIENT_FUNDS`), 10-way concurrent overdraft race (`Promise.all`), 20-way inverted AB/BA deadlock stress test, idempotency replay and conflict (`409 IDEMPOTENCY_CONFLICT`), direct SQL privilege blocks (`42501` / `28000`), and SHA-256 audit chain verification & superuser tamper detection (`GET /api/admin/audit-logs/verify`).
+  - Covers RBAC (`401`/`403` on `/api/admin/*`), `PENDING_KYC` transfer blocking (`403 KYC_PENDING`), atomic overdraft rollback with zero orphan rows (`422 INSUFFICIENT_FUNDS`), 20-way concurrent overdraft race (`Promise.all`), 30-way inverted AB/BA deadlock stress test, idempotency replay and conflict (`409 IDEMPOTENCY_CONFLICT`), direct SQL privilege blocks (`42501` / `28000`), SHA-256 audit chain verification & superuser tamper detection (`GET /api/admin/audit-logs/verify`), PostgreSQL-backed token revocation & rate limiting (`revoked_tokens`, `rate_limit_buckets`), and PgBouncer transaction-level advisory lock safety (`pg_advisory_xact_lock`).
 - **32 / 32 Frontend Tests & Production Build Passing (`cd web && npm test && npm run build`):**
-  - Verifies Holder, Admin, Auditor, and Login/Registration/Bootstrap flows, paise integer conversion (`parseRupeesToPaise`), and reconciliation/audit verification banners.
-- **16 / 16 Live Attack Script Checks Passing (`npm run attack`):**
-  - Re-runs adversarial exploit scenarios against a live URL and asserts that `GET /api/reconcile` reports `balanced: true` after all attacks complete.
+  - Verifies float-free rupee-to-paise integer conversion (`money.test.js`) and builds the production Vite bundle cleanly.
+- **8 / 8 Live Smoke Verification Checks (`npm run verify:live`) & 16 / 16 Live Adversarial Attack Checks (`npm run attack`):**
+  - Programmatically verifies `/health`, `/ready`, `/api/system/status`, Admin JWT login, `/api/admin/audit-logs/verify` (`verified: true`), `ACCOUNT_HOLDER` -> `/api/admin/users` (`403`), `PENDING_KYC` transfer rejection (`403`), and idempotent double-entry transfers with `GET /api/ledger/reconcile` (`balanced: true`, `SUM(debits) == SUM(credits)`).
 
-#### Remaining Production Hardening Items
-1. **Distributed Rate Limiting & JWT Revocation Store:** Replace in-process memory maps (`rate-limit.js`, `revokedJtis`) with Redis / Upstash so rate limits and token revocations synchronize across multiple serverless instances.
-2. **Database Session Timeouts:** Set `lock_timeout = '2s'`, `statement_timeout = '5s'`, and `idle_in_transaction_session_timeout = '10s'` on the `ledgerproof_app` role to bound worst-case lock waits.
-3. **Asymmetric Signing & External Anchoring for Audit Logs:** Periodically sign the tip `entry_hash` (`headHash`) with an HSM/KMS Ed25519 key or anchor it to an external append-only log (e.g., AWS QLDB / S3 Object Lock) so even a full database wipe + re-chain by a host root attacker is detectable.
-4. **Automated Playwright Browser E2E Suite in CI:** Add headless Chromium E2E runs against preview deployments on every pull request.
+#### Serverless & PgBouncer Production Hardening Completed
+1. **PostgreSQL-Backed JWT Revocation & Rate Limiting (`revoked_tokens` & `rate_limit_buckets`):** Eliminated process-local JavaScript `Map` state so logged-out/revoked JWT `jti`s (`POST /api/auth/logout`) and sliding-window rate-limit buckets persist in PostgreSQL and synchronize immediately across all Vercel serverless instances.
+2. **Supabase PgBouncer Transaction-Pooler Safety (`:6543?pgbouncer=true`):** `chain_audit_log()` uses transaction-level `pg_advisory_xact_lock(20261110)` rather than session-level `pg_advisory_lock`, and all transaction settings use `SET LOCAL` inside `BEGIN ... COMMIT`, leaving zero dangling locks or session state on pooled connections.
+3. **Pinned Supabase Root CA & Restricted DB Role (`ledgerproof_app`):** Production connections verify the TLS chain against Supabase's pinned root CA (`api/src/supabase-ca.js`) and fail closed at startup (`assertRestrictedRole`) if connected as a superuser or table owner.

@@ -161,3 +161,53 @@ test("THREAT first-admin bootstrap: /api/system/bootstrap requires BOOTSTRAP_SEC
   });
   assert.equal(forbidden.status, 403);
 });
+
+test("THREAT serverless token revocation and rate limiting: revoked JWTs are persisted in revoked_tokens and blocked with 401 across instances", async () => {
+  const loginRes = await call("POST", "/api/auth/login", {
+    body: { email: "alice@ledgerline.com", password: "Alice@123" },
+  });
+  assert.equal(loginRes.status, 200);
+  const token = loginRes.body.token;
+
+  // Before logout, /api/me succeeds
+  const meBefore = await call("GET", "/api/me", { token });
+  assert.equal(meBefore.status, 200);
+
+  // Logout persists the token JTI into PostgreSQL revoked_tokens
+  const logoutRes = await call("POST", "/api/auth/logout", { token });
+  assert.equal(logoutRes.status, 200);
+  assert.equal(logoutRes.body.status, "logged_out");
+
+  const revokedCount = (await pool.query("SELECT count(*)::int AS c FROM revoked_tokens")).rows[0].c;
+  assert.ok(revokedCount >= 1, "revoked token JTI is stored in PostgreSQL revoked_tokens");
+
+  // Reusing the revoked token is immediately rejected with 401
+  const meAfter = await call("GET", "/api/me", { token });
+  assert.equal(meAfter.status, 401);
+
+  // Rate limit bucket was also persisted in PostgreSQL rate_limit_buckets
+  const bucketCount = (await pool.query("SELECT count(*)::int AS c FROM rate_limit_buckets")).rows[0].c;
+  assert.ok(bucketCount >= 1, "rate limit state is stored in PostgreSQL rate_limit_buckets");
+});
+
+test("THREAT PgBouncer transaction pooler safety: audit chain hashing and transfers use pg_advisory_xact_lock and leave zero dangling session locks", async () => {
+  const aliceToken = await tokenFor("alice");
+  const alice = await accountOf("alice@ledgerline.com");
+  const bob = await accountOf("bob@ledgerline.com");
+
+  const transferRes = await call("POST", "/api/transactions/transfer", {
+    token: aliceToken,
+    body: { fromAccountId: alice.id, toAccountId: bob.id, amountPaise: 1_000 },
+    headers: { "Idempotency-Key": "pgbouncer-lock-check-1" },
+  });
+  assert.equal(transferRes.status, 201);
+
+  // Verify function definition uses transaction-level pg_advisory_xact_lock and never session-level pg_advisory_lock
+  const fnDef = await pool.query("SELECT prosrc FROM pg_proc WHERE proname = 'chain_audit_log'");
+  assert.match(fnDef.rows[0].prosrc, /pg_advisory_xact_lock/);
+  assert.doesNotMatch(fnDef.rows[0].prosrc, /pg_advisory_lock\(/);
+
+  // Confirm zero dangling session-level advisory locks exist after transaction completion
+  const locks = await pool.query("SELECT count(*)::int AS c FROM pg_locks WHERE locktype = 'advisory' AND granted = true");
+  assert.equal(locks.rows[0].c, 0, "zero dangling advisory locks after transaction commit");
+});

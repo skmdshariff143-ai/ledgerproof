@@ -5,9 +5,12 @@
   "scripts": {
     "start": "node --env-file-if-exists=../.env src/local.js",
     "dev": "node --env-file-if-exists=../.env src/local.js",
+    "build": "node --check src/index.js",
     "seed": "node --env-file-if-exists=../.env scripts/seed.js",
+    "db:seed": "node --env-file-if-exists=../.env scripts/seed.js",
     "db:migrate": "node --env-file-if-exists=../.env scripts/migrate.js",
     "db:bootstrap-admin": "node --env-file-if-exists=../.env scripts/bootstrap-admin.js",
+    "verify:live": "node --env-file-if-exists=../.env scripts/verify-live.js",
     "attack": "node --env-file-if-exists=../.env scripts/attack.js",
     "test": "node --env-file-if-exists=../.env --test --test-concurrency=1"
   },

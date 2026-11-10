@@ -86,8 +86,8 @@ CREATE TABLE audit_log (
   actor_id      uuid GENERATED ALWAYS AS (actor_user_id) STORED,
   actor_role    text,
   action        text NOT NULL,
-  target_type   text,
   target        text,
+  target_type   text GENERATED ALWAYS AS (CASE WHEN position(':' in target) > 0 THEN split_part(target, ':', 1) ELSE NULL END) STORED,
   target_id     text GENERATED ALWAYS AS (target) STORED,
   ip            text,
   ip_address    text GENERATED ALWAYS AS (ip) STORED,
@@ -101,6 +101,23 @@ CREATE TABLE audit_log (
 
 CREATE VIEW audit_logs AS SELECT * FROM audit_log;
 
+-- Serverless-safe JWT revocation store (persists logged-out / revoked token JTIs across instances).
+CREATE TABLE revoked_tokens (
+  jti        text PRIMARY KEY,
+  user_id    uuid REFERENCES users (id),
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX revoked_tokens_expires_at_idx ON revoked_tokens (expires_at);
+
+-- Serverless-safe distributed rate-limiting buckets backed by PostgreSQL.
+CREATE TABLE rate_limit_buckets (
+  bucket_key text PRIMARY KEY,
+  points     int NOT NULL DEFAULT 1,
+  reset_at   timestamptz NOT NULL
+);
+
 -- Append-only: block UPDATE, DELETE and TRUNCATE on history tables.
 CREATE FUNCTION reject_change() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
@@ -110,6 +127,9 @@ $$;
 
 CREATE FUNCTION prevent_ledger_mutation() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
+  IF TG_TABLE_NAME = 'transactions' AND TG_OP = 'UPDATE' AND pg_trigger_depth() >= 2 THEN
+    RETURN NEW;
+  END IF;
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END;
 $$;
@@ -193,6 +213,11 @@ BEGIN
   IF lower(account_status) <> 'active' THEN
     RAISE EXCEPTION 'account % is %', NEW.account_id, account_status;
   END IF;
+  UPDATE transactions
+     SET amount = COALESCE(amount, NEW.amount_paise),
+         source_account_id = CASE WHEN lower(NEW.direction) = 'debit' THEN NEW.account_id ELSE source_account_id END,
+         destination_account_id = CASE WHEN lower(NEW.direction) = 'credit' THEN NEW.account_id ELSE destination_account_id END
+   WHERE id = NEW.transaction_id;
   RETURN NEW;
 END;
 $$;

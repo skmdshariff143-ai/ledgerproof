@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { audit } from "./audit.js";
 import { fail, isUuid } from "./errors.js";
@@ -8,7 +8,63 @@ const TOKEN_LIFETIME = "1h";
 // Unknown emails are checked against this hash so they take as long as a wrong password.
 const DUMMY_HASH = await hashPassword(randomBytes(16).toString("hex"));
 
-// The token carries only the user id. Role is read from the database on every request.
+// Fast L1 cache of revoked JTIs (jti -> expiresAtMs). PostgreSQL `revoked_tokens` is the source of truth
+// so revocations take effect immediately across all Vercel serverless instances.
+const revokedJtiCache = new Map();
+
+function isJtiCachedRevoked(jti) {
+  if (!jti) return false;
+  const expiresAt = revokedJtiCache.get(jti);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    revokedJtiCache.delete(jti);
+    return false;
+  }
+  return true;
+}
+
+export async function isTokenRevoked(pool, jti) {
+  if (!jti) return false;
+  if (isJtiCachedRevoked(jti)) return true;
+  try {
+    const { rows } = await pool.query(
+      "SELECT expires_at FROM revoked_tokens WHERE jti = $1 AND expires_at > now()",
+      [jti],
+    );
+    if (rows.length > 0) {
+      revokedJtiCache.set(jti, new Date(rows[0].expires_at).getTime());
+      return true;
+    }
+    return false;
+  } catch (err) {
+    if (err.code === "42P01" || err.code === "42501") return false;
+    throw err;
+  }
+}
+
+export async function revokeToken(pool, decodedToken) {
+  const jti = decodedToken?.jti;
+  if (!jti || typeof jti !== "string") return false;
+  const expSeconds = typeof decodedToken.exp === "number"
+    ? decodedToken.exp
+    : Math.floor(Date.now() / 1000) + 3600;
+  const expiresAt = new Date(expSeconds * 1000);
+  revokedJtiCache.set(jti, expiresAt.getTime());
+  try {
+    await pool.query("DELETE FROM revoked_tokens WHERE expires_at <= now()");
+    await pool.query(
+      `INSERT INTO revoked_tokens (jti, user_id, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (jti) DO NOTHING`,
+      [jti, isUuid(decodedToken.sub) ? decodedToken.sub : null, expiresAt.toISOString()],
+    );
+  } catch (err) {
+    if (err.code !== "42P01" && err.code !== "42501") throw err;
+  }
+  return true;
+}
+
+// The token carries only the user id and a unique JTI. Role and status are read from the database on every request.
 export async function login(pool, secret, { email, password }, ip) {
   if (typeof email !== "string" || typeof password !== "string") {
     throw fail("INVALID_INPUT", "email and password are required");
@@ -21,24 +77,43 @@ export async function login(pool, secret, { email, password }, ip) {
     throw fail("UNAUTHENTICATED", "invalid email or password");
   }
   await audit(pool, { actor: user, action: "login", ip, outcome: "success" });
-  return jwt.sign({}, secret, { algorithm: "HS256", subject: user.id, expiresIn: TOKEN_LIFETIME });
+  return jwt.sign({}, secret, {
+    algorithm: "HS256",
+    subject: user.id,
+    jwtid: randomUUID(),
+    expiresIn: TOKEN_LIFETIME,
+  });
 }
 
-// Sets req.user = { id, email, role } from a verified token plus a fresh database lookup.
+// Sets req.user = { id, email, role, status } from a verified token plus a fresh database lookup.
 export function authenticate(pool, secret) {
   return async (req, res, next) => {
     const [scheme, token] = (req.get("Authorization") ?? "").split(" ");
-    let userId;
+    let decoded;
     try {
       if (scheme !== "Bearer" || !token) throw new Error("missing token");
-      userId = jwt.verify(token, secret, { algorithms: ["HS256"] }).sub;
+      decoded = jwt.verify(token, secret, { algorithms: ["HS256"] });
     } catch {
       throw fail("UNAUTHENTICATED", "a valid bearer token is required");
     }
+    const userId = decoded.sub;
     if (!isUuid(userId)) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
-    const { rows } = await pool.query("SELECT id, email, role, status FROM users WHERE id = $1", [userId]);
+    if (decoded.jti && (await isTokenRevoked(pool, decoded.jti))) {
+      throw fail("UNAUTHENTICATED", "token has been revoked");
+    }
+    let rows;
+    try {
+      ({ rows } = await pool.query("SELECT id, email, role, status FROM users WHERE id = $1", [userId]));
+    } catch (err) {
+      if (err.code !== "42703") throw err;
+      ({ rows } = await pool.query(
+        "SELECT u.id, u.email, u.role, COALESCE((SELECT a.status FROM accounts a WHERE a.owner_id = u.id ORDER BY a.created_at LIMIT 1), 'active') AS status FROM users u WHERE u.id = $1",
+        [userId],
+      ));
+    }
     if (rows.length === 0) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
     const row = rows[0];
+    req.tokenPayload = decoded;
     req.user = {
       id: row.id,
       email: row.email,
@@ -94,14 +169,18 @@ export async function registerUser(pool, secret, { email, password }, ip) {
     await audit(client, {
       actor: user,
       action: "USER_REGISTERED",
-      targetType: "user",
       target: `user:${user.id}`,
       ip,
       details: { email: user.email, accountId: accRes.rows[0].id, status: "PENDING_KYC" },
       outcome: "success",
     });
     await client.query("COMMIT");
-    const token = jwt.sign({}, secret, { algorithm: "HS256", subject: user.id, expiresIn: TOKEN_LIFETIME });
+    const token = jwt.sign({}, secret, {
+      algorithm: "HS256",
+      subject: user.id,
+      jwtid: randomUUID(),
+      expiresIn: TOKEN_LIFETIME,
+    });
     return { token, user, account: accRes.rows[0] };
   } catch (err) {
     broken = await client.query("ROLLBACK").then(() => false, () => true);

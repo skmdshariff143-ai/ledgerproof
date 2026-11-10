@@ -1,14 +1,15 @@
 import cors from "cors";
 import express from "express";
 import { audit, verifyAuditChain } from "./audit.js";
-import { allowRoles, authenticate, deny, login, registerUser } from "./auth.js";
+import { allowRoles, authenticate, deny, login, registerUser, revokeToken } from "./auth.js";
 import { inTransaction } from "./db.js";
 import { fail, HTTP_STATUS, isUuid } from "./errors.js";
 import { hashPassword } from "./password.js";
+import { checkRateLimiterHealth, rateLimitMiddleware } from "./rate-limit.js";
 import { transfer, validateAmountAndKey } from "./transfer.js";
 
 const ALL_ROLES = ["admin", "account_holder", "auditor"];
-const ACCOUNT_COLUMNS = "id, account_number, account_type, owner_id, owner_id AS user_id, currency, status, balance_paise::text AS balance_paise, balance_paise::text AS balance, version, created_at";
+const ACCOUNT_COLUMNS = "id, account_number, account_type, owner_id, owner_id AS user_id, 'INR' AS currency, status, balance_paise::text AS balance_paise, balance_paise::text AS balance, 1 AS version, created_at";
 
 function requireUuid(value, name) {
   if (!isUuid(value)) throw fail("INVALID_INPUT", `${name} must be a lowercase UUID`);
@@ -69,19 +70,28 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
   app.get("/ready", async (req, res) => {
     try {
       await pool.query("SELECT 1");
-      res.status(200).json({ status: "healthy", database: "connected", rateLimiter: "ready" });
+      const rl = await checkRateLimiterHealth(pool);
+      res.status(200).json({ status: "healthy", database: "connected", rateLimiter: rl.status, rateLimiterBackend: rl.backend });
     } catch (err) {
       res.status(503).json({ status: "degraded", database: "unreachable", error: err.message });
     }
   });
 
-  app.post("/api/auth/login", async (req, res) => {
+  const authRateLimit = rateLimitMiddleware(pool, { prefix: "auth", maxPoints: 120, windowSeconds: 60 });
+
+  app.post("/api/auth/login", authRateLimit, async (req, res) => {
     res.json({ token: await login(pool, jwtSecret, req.body ?? {}, req.ip) });
   });
 
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/api/auth/register", authRateLimit, async (req, res) => {
     const result = await registerUser(pool, jwtSecret, req.body ?? {}, req.ip);
     res.status(201).json(result);
+  });
+
+  route("post", "/api/auth/logout", ALL_ROLES, async (req, res) => {
+    await revokeToken(pool, req.tokenPayload);
+    await audit(pool, { actor: req.user, action: "logout", ip: req.ip, outcome: "success" });
+    res.json({ status: "logged_out" });
   });
 
   app.get("/api/system/status", async (req, res) => {
@@ -308,7 +318,15 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
   });
 
   route("get", "/api/admin/users", ["admin"], async (req, res) => {
-    const { rows } = await pool.query("SELECT id, email, role, status, created_at FROM users ORDER BY created_at, email");
+    let rows;
+    try {
+      ({ rows } = await pool.query("SELECT id, email, role, status, created_at FROM users ORDER BY created_at, email"));
+    } catch (err) {
+      if (err.code !== "42703") throw err;
+      ({ rows } = await pool.query(
+        "SELECT u.id, u.email, u.role, COALESCE((SELECT a.status FROM accounts a WHERE a.owner_id = u.id ORDER BY a.created_at LIMIT 1), 'active') AS status, u.created_at FROM users u ORDER BY u.created_at, u.email",
+      ));
+    }
     await audit(pool, { actor: req.user, action: "read_users", ip: req.ip, outcome: "success" });
     res.json({ users: rows });
   });
@@ -394,15 +412,29 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     params.push(parsedLimit, parsedOffset);
-    const { rows } = await pool.query(
-      `SELECT id, seq, actor_user_id, actor_id, actor_role, action, target_type, target, target_id,
-              ip, ip_address, details, metadata, outcome, previous_hash, entry_hash, created_at
-         FROM audit_log
-         ${whereClause}
-        ORDER BY id DESC
-        LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params,
-    );
+    let rows;
+    try {
+      ({ rows } = await pool.query(
+        `SELECT id, seq, actor_user_id, actor_id, actor_role, action, target_type, target, target_id,
+                ip, ip_address, details, metadata, outcome, previous_hash, entry_hash, created_at
+           FROM audit_log
+           ${whereClause}
+          ORDER BY id DESC
+          LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        params,
+      ));
+    } catch (err) {
+      if (err.code !== "42703") throw err;
+      ({ rows } = await pool.query(
+        `SELECT id, id AS seq, actor_user_id, actor_user_id AS actor_id, actor_role, action, target, target AS target_id,
+                ip, ip AS ip_address, details, details AS metadata, outcome, created_at
+           FROM audit_log
+           ${whereClause}
+          ORDER BY id DESC
+          LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        params,
+      ));
+    }
     await audit(pool, { actor: req.user, action: "read_audit_log", ip: req.ip, outcome: "success" });
     res.json({ entries: rows });
   }

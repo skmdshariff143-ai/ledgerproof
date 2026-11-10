@@ -13,6 +13,7 @@ export const HTTP_STATUS = {
   USER_EXISTS: 409,
   INSUFFICIENT_FUNDS: 422,
   ACCOUNT_FROZEN: 422,
+  RATE_LIMITED: 429,
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

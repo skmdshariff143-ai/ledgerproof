@@ -57,20 +57,19 @@ cp .env.example .env
 docker compose up -d
 docker compose exec db createdb -U ledger ledgerproof
 
-# 3. Install backend dependencies, run migrations/seed, bootstrap admin, and run the test suite
-cd api
+# 3. Install dependencies, run migrations/seed, bootstrap admin, and run the test suite
+# (All scripts work from both the repository root and inside api/ or web/)
 npm install
 npm run db:migrate
 npm run db:bootstrap-admin
-npm run seed
+npm run db:seed
 npm test
-npm run dev
+npm run build
+npm run verify:live
 
-# 4. In a second terminal, start the React + Vite frontend
-cd web
-npm install
-npm test
-npm run dev
+# 4. Start the API and React + Vite frontend in two terminals
+cd api && npm run dev
+cd web && npm run dev
 ```
 
 The API listens on `http://localhost:3000` and the web app on `http://localhost:5173`.
@@ -169,10 +168,7 @@ Built and verified:
 - KYC onboarding workflow (`PENDING_KYC` -> `ACTIVE`), First-Admin bootstrap, and server-enforced RBAC.
 - Cryptographic SHA-256 hash-chained audit trail with live tamper verification (`GET /api/admin/audit-logs/verify`) and full ledger reconciliation (`GET /api/ledger/reconcile`).
 - Per-user idempotency keys with sequential and concurrent replay protection.
-- React + Vite verification dashboard for Account Holders, Auditors, and Admins, with strict CSP headers.
-- 103/103 backend integration tests and 32/32 frontend unit tests passing.
-
-Known gaps & remaining production hardening items (also listed in [THREATS.md](THREATS.md)):
-- The live site runs on free tiers (Vercel serverless cold starts + Supabase free project pause after inactivity).
-- No automated browser end-to-end (Playwright/Cypress) test suite yet; the UI was verified manually across all roles while all API and money math paths are covered by 135 automated tests.
-- Login and reconciliation endpoints do not yet enforce per-IP rate limiting, and `lock_timeout` / `statement_timeout` are not yet pinned on database sessions.
+- **Serverless-safe PostgreSQL token revocation & rate limiting (`revoked_tokens`, `rate_limit_buckets`).** Calling `POST /api/auth/logout` persists the token's `jti` in `revoked_tokens` so revoked tokens are immediately rejected with `401` across all Vercel serverless instances. Auth endpoints enforce distributed rate limiting backed by `rate_limit_buckets`.
+- **PgBouncer Transaction-Pooler safety (`:6543?pgbouncer=true`).** `chain_audit_log()` uses transaction-scoped `pg_advisory_xact_lock` (never session-level `pg_advisory_lock`) and all session settings use `SET LOCAL` inside `BEGIN ... COMMIT`, leaving zero dangling locks on pooled connections.
+- **React + Vite verification dashboard** for Account Holders, Auditors, and Admins, with strict CSP headers.
+- **105/105 backend integration tests**, **32/32 frontend unit tests**, **8/8 `npm run verify:live` checks**, and **16/16 `npm run attack` checks** passing.
