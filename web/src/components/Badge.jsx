@@ -1,10 +1,11 @@
 const TONES = {
-  success: "ok", active: "ok", credit: "ok",
-  denied: "bad", debit: "bad",
-  error: "warn", frozen: "warn",
+  success: "ok", active: "ok", credit: "ok", verified: "ok",
+  denied: "bad", debit: "bad", rejected: "bad", tampered: "bad",
+  error: "warn", frozen: "warn", pending_kyc: "warn",
 };
 
 // Small colored label; the text always says what it means, color is only a hint.
 export function Badge({ value }) {
-  return <span className={`badge badge-${TONES[value] ?? "neutral"}`}>{value.replace("_", " ")}</span>;
+  const normalized = (value ?? "").toLowerCase();
+  return <span className={`badge badge-${TONES[normalized] ?? "neutral"}`}>{String(value ?? "").replace(/_/g, " ")}</span>;
 }

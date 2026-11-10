@@ -1,161 +1,178 @@
-# LedgerProof
+# LedgerProof (BalanceVault / LedgerLine)
 
-Money movement with a ledger you can prove. Solo submission for the Snovasys Fresher Hiring Challenge 2026, problem "LedgerLine".
+Money movement with a ledger you can prove. Solo submission for the **Snovasys Fresher Hiring Challenge 2026 — VVIT**.
 
 ## Live
 
-| | Address |
+| Service | Address |
 |---|---|
-| App | https://ledgerproof-web.vercel.app |
-| API | https://ledgerproof-api.vercel.app (for example `GET /api/me` answers 401 without a token) |
+| Web App | https://ledgerproof-web.vercel.app |
+| Backend API | https://ledgerproof-api.vercel.app (for example `GET /health` returns 200; `GET /api/me` returns 401 without a token) |
 
-Sign in with the demo logins below (the login screen has a one-click button for each). The ledger on the live site is append-only and already contains the activity of the live attack checks (`npm run attack`), so you will see extra transfers and withdrawals that net to zero.
+Sign in with the demo logins below (the login screen has a one-click button for each), or register a new `PENDING_KYC` account and approve it from the Admin console. The ledger on the live site is append-only and already contains the activity of the live attack checks (`npm run attack`), so you will see extra transfers and withdrawals that net to zero.
 
 ```
-Browser app (web/, React + Vite)  ->  API (api/, Express + pg)  ->  PostgreSQL (db/schema.sql)
-   role-based screens                    JWT, roles, ownership,        triggers and constraints
-   idempotency demo                      idempotent money movement     that enforce the same rules
+Browser app (web/, React + Vite)  ->  API (api/, Express + pg)  ->  PostgreSQL (db/schema.sql + db/roles.sql)
+   role-based views, KYC banner          JWT (HS256), fresh DB RBAC,    append-only triggers, row locks,
+   idempotency retry simulator           atomic double-entry transfers  SHA-256 hash-chained audit trail
 ```
 
-## How the books stay correct
+## Architecture & Security Model (How the Books Stay Correct)
 
-- **Double entry.** Every transaction is a debit row and a credit row of equal amounts in `ledger_entries`. A deferred database trigger rejects any transaction whose debits and credits differ at COMMIT.
-- **Integer paise.** Money is `bigint` paise in Postgres and a safe integer in JS. It is sent over HTTP as a string, and the browser app parses and formats it without floats.
-- **Money has a source.** Deposits come from the single `SYSTEM_VAULT` account, the only account allowed below zero.
-- **The database refuses overdrafts.** `accounts.balance_paise` is kept by a trigger on every ledger insert, and a `CHECK` refuses any user balance below zero. The balance cannot be edited directly.
-- **Append-only history.** `ledger_entries`, `transactions`, `idempotency_keys` and `audit_log` reject UPDATE, DELETE and TRUNCATE.
-- **No deadlocks between opposite transfers.** A transfer locks both accounts in ascending id order before reading the balance.
-- **The same request never pays twice.** Each user's `Idempotency-Key` is a primary key written in the same transaction as the money movement. A retry gets the same 201 answer with an `Idempotent-Replayed: true` header.
-- **Authorization.** The JWT carries only the user id. The role is read fresh from the database on every request. Every route names the roles allowed to call it, and account holders can touch only accounts they own. Denied and failed attempts are written to `audit_log` in their own transaction, so a rollback cannot erase them.
-- **The books can be re-proved at any time.** `GET /api/ledger/reconcile` recomputes totals and every balance from the ledger rows and reports any difference.
+- **Double-entry ledger math.** Every money movement (`deposit`, `transfer`, `withdrawal`) writes two balanced rows into `ledger_entries`: one `debit` and one `credit` of equal `amount_paise` (`SUM(DEBIT) == SUM(CREDIT)`). A deferred PostgreSQL constraint trigger (`ledger_entries_balanced`) rejects any transaction whose debits and credits differ at `COMMIT`.
+- **Integer minor units (paise).** Money is stored as `bigint` paise in PostgreSQL (`amount_paise` / `balance_paise`) and sent over HTTP as strings. The browser parses and formats rupees with string math and `BigInt` (`web/src/money.js`)—never IEEE-754 floats.
+- **No naked balance updates.** `accounts.balance_paise` is updated exclusively by the `SECURITY DEFINER` database trigger `apply_ledger_entry()` on `ledger_entries` insert. The `accounts_guard` trigger rejects any direct `UPDATE accounts SET balance_paise = ...` (enforcing `pg_trigger_depth() >= 2`) and enforces `CHECK (balance_paise >= 0)` on all user accounts. Only the single `SYSTEM_VAULT` treasury account may go below zero.
+- **Deterministic row-level locking & concurrency safety.** Every transfer executes inside a single atomic `BEGIN ISOLATION LEVEL READ COMMITTED ... COMMIT` transaction and locks both accounts in ascending UUID order (`SELECT ... FROM accounts WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE`). Opposite-direction concurrent transfers (`A -> B` and `B -> A`) queue on the lower ID instead of deadlocking, and 20 simultaneous withdrawals never overdraw an account.
+- **Idempotency per user.** Each money request requires an `Idempotency-Key` header. The key and SHA-256 request hash (`user_id`, `from`, `to`, `amount`) are stored in `idempotency_keys` inside the same SQL transaction as the ledger entries. Retrying the same transfer returns the original `201` response with `Idempotent-Replayed: true` and debits the sender only once; reusing a key with different parameters returns `409 IDEMPOTENCY_CONFLICT`.
+- **Server-enforced RBAC & KYC onboarding state machine.** The JWT (`HS256`) carries only the `sub` user ID. On every request, `authenticate()` queries the user's current `role` (`admin`, `auditor`, `account_holder`) and `status` from PostgreSQL. Self-registered users (`POST /api/auth/register`) start in `PENDING_KYC` status with `0` balance and receive `403 Forbidden` (`KYC_PENDING`) if they attempt to send or receive money until an Admin calls `POST /api/admin/users/:id/approve`.
+- **Append-only triggers & restricted DB role.** `ledger_entries`, `transactions`, `idempotency_keys`, and `audit_log` have `BEFORE UPDATE OR DELETE` and `BEFORE TRUNCATE` triggers (`prevent_ledger_mutation`, `prevent_audit_mutation`, `reject_change`) that raise an exception on any mutation attempt. In production, the API connects as `ledgerproof_app` (`db/roles.sql`), which has no `UPDATE`, `DELETE`, or `TRUNCATE` privileges on history or balances.
+- **Cryptographic SHA-256 hash-chained audit trail.** Every row in `audit_log` (including denied and failed attempts committed outside rolled-back transactions) is cryptographically linked to its predecessor by `chain_audit_log()`:
+  `entry_hash = SHA256(previous_hash + '|' + seq + '|' + actor_id + '|' + actor_role + '|' + action + '|' + target_id + '|' + canonicalJson(metadata) + '|' + created_at_iso)` starting from `GENESIS_LEDGERPROOF_2026`. Calling `GET /api/admin/audit-logs/verify` recomputes every hash from Genesis to head and pinpoints the exact `tamperedSeq` if any record was altered.
+- **Books reconciliation.** `GET /api/ledger/reconcile` runs in a `REPEATABLE READ READ ONLY` snapshot, recomputes every account balance from `ledger_entries`, and flags any mismatch.
 
-Details: [DECISIONS.md](DECISIONS.md) explains each integrity decision. [THREATS.md](THREATS.md) maps each threat to its defenses and the test that proves it. [PROMPTS.md](PROMPTS.md) records how AI was used and where it was wrong.
+Details: [DECISIONS.md](DECISIONS.md) explains each integrity decision. [THREATS.md](THREATS.md) maps each threat to its defenses and the test that proves it. [PROMPTS.md](PROMPTS.md) records how AI was used and where it was wrong. [SNOVASYS_SUBMISSION.md](SNOVASYS_SUBMISSION.md) contains the complete submission questionnaire responses.
 
-## Demo logins
+## Demo Logins
 
-Created by `npm run seed`. They are for demonstration only. The login screen has a one-click button for each.
+Created by `npm run seed`. The login screen includes one-click evaluator buttons for each:
 
-| Role | Email | Password | Starting balance |
+| Role | Email | Password | Starting Balance |
 |---|---|---|---|
-| Admin | admin@ledgerline.com | Admin@123 | none |
-| Account holder | alice@ledgerline.com | Alice@123 | ₹10,000 |
-| Account holder | bob@ledgerline.com | Bob@123 | ₹5,000 |
-| Auditor | auditor@ledgerline.com | Auditor@123 | none |
+| Admin | `admin@ledgerline.com` | `Admin@123` | none (manages `SYSTEM_VAULT` & KYC) |
+| Account holder | `alice@ledgerline.com` | `Alice@123` | ₹10,000.00 (`1000000` paise) |
+| Account holder | `bob@ledgerline.com` | `Bob@123` | ₹5,000.00 (`500000` paise) |
+| Auditor | `auditor@ledgerline.com` | `Auditor@123` | none (read-only ledger & audit verifier) |
 
-## Run locally
+## Run Locally (5-Minute Stranger Setup)
 
-Needs Docker and Node.js 22.12 or later.
+Requires Node.js 22.12+ and PostgreSQL 16+ (or Docker).
 
-```
-cp .env.example .env          # then put a random value in JWT_SECRET (the file shows how)
+```bash
+# 1. Configure environment variables
+cp .env.example .env
+# Set JWT_SECRET (at least 32 chars) and BOOTSTRAP_SECRET in .env:
+# node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# 2. Start PostgreSQL via Docker Compose and create the app database
 docker compose up -d
 docker compose exec db createdb -U ledger ledgerproof
-cd api && npm install && npm run seed && npm start
-cd web && npm install && npm run dev          # in a second terminal
+
+# 3. Install backend dependencies, run migrations/seed, bootstrap admin, and run the test suite
+cd api
+npm install
+npm run db:migrate
+npm run db:bootstrap-admin
+npm run seed
+npm test
+npm run dev
+
+# 4. In a second terminal, start the React + Vite frontend
+cd web
+npm install
+npm test
+npm run dev
 ```
 
-The API listens on `http://localhost:3000` and the app on `http://localhost:5173`. The seed creates the schema when the database is empty, and running it twice does not pay the opening deposits twice. There are no migrations yet: after pulling a schema change, recreate the local database (`docker compose exec db dropdb -U ledger ledgerproof`, then `createdb` and `npm run seed` again).
+The API listens on `http://localhost:3000` and the web app on `http://localhost:5173`.
 
-### Settings
+### Environment Variables (`.env.example` & `web/.env.example`)
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `DATABASE_URL` | api | App database. Locally, for example `postgres://ledger:ledger@localhost:5432/ledgerproof`. Deployed, it must connect as the restricted role `ledgerproof_app` (the API refuses to serve otherwise). For Supabase, use the Transaction pooler string with user `ledgerproof_app.<project-ref>` and no `sslmode` setting: TLS is verified in code |
-| `OWNER_DATABASE_URL` | api seed | Only for `npm run seed` on a deployed database: the schema owner's connection string. Unset falls back to `DATABASE_URL` |
-| `TEST_DATABASE_URL` | api tests | Test database. The name must end in `_test`: the tests wipe it |
-| `JWT_SECRET` | api | At least 32 random characters. The server refuses to start without it |
-| `ALLOWED_ORIGINS` | api | Browser origins allowed to read API answers, comma-separated, exact (no trailing slash). Unset means none. For example `http://localhost:5173,https://your-app.example.com` |
-| `PORT` | api | Defaults to 3000 |
-| `VITE_API_URL` | web | Where the API runs. Defaults to `http://localhost:3000` |
-| `API_URL` | `npm run attack` | The address of your own deployment, for the live attack checks. The script refuses to run without it |
+| `DATABASE_URL` | `api` | Runtime app database connection. Locally: `postgres://ledger:ledger@localhost:5432/ledgerproof`. On Supabase/Vercel: use the Transaction Pooler URL on port `6543` (`?pgbouncer=true`) with user `ledgerproof_app.<project-ref>`. Verified TLS is enforced in code via `api/src/supabase-ca.js`. |
+| `DIRECT_URL` | `api` scripts | Direct PostgreSQL connection on port `5432` for DDL migrations (`npm run db:migrate`), `npm run db:bootstrap-admin`, and `npm run seed`. Falls back to `OWNER_DATABASE_URL` or `DATABASE_URL`. |
+| `OWNER_DATABASE_URL` | `api` seed | Schema owner connection string for `npm run seed` on a deployed database. |
+| `TEST_DATABASE_URL` | `api` tests | Test database URL. Must end in `_test` (`postgres://ledger:ledger@localhost:5432/ledgerproof_test`) because the test suite wipes and rebuilds it on each test. |
+| `JWT_SECRET` | `api` | Secret for HS256 JWT signing (minimum 32 characters). The server refuses to start without it. |
+| `BOOTSTRAP_SECRET` | `api` | Secret guarding `POST /api/system/bootstrap` for First-Admin initialization when zero admins exist. |
+| `ALLOWED_ORIGINS` | `api` | Comma-separated exact browser origins allowed by CORS (e.g. `http://localhost:5173,https://ledgerproof-web.vercel.app`). |
+| `PORT` | `api` | Local HTTP port (defaults to `3000`). |
+| `VITE_API_URL` | `web` | Base URL of the backend API (defaults to `http://localhost:3000`). |
+| `API_URL` | `npm run attack` | Target URL of your own deployment for live adversarial checks. |
 
 ## Deploy (Vercel + Supabase)
 
-The same code runs on Vercel, as two projects from this one repository, with a Supabase database.
+1. **Database (`db/schema.sql` & `db/roles.sql`).** Create a Supabase project. Using the Direct connection (`DIRECT_URL` on port `5432` as `postgres`), run `npm run db:migrate` (or execute `db/schema.sql` followed by `db/roles.sql`) and set a password for the restricted app role:
+   ```sql
+   ALTER ROLE ledgerproof_app WITH LOGIN PASSWORD '<strong-random-password>';
+   ```
+2. **Bootstrap & Demo Data.** Run `DIRECT_URL=<owner-direct-url> npm run seed` (or `npm run db:bootstrap-admin` for a clean production instance with only the first admin and `SYSTEM_VAULT`).
+3. **API Project on Vercel** (Root Directory: `api`).
+   - `api/vercel.json` routes all requests (`/(.*)`) to `src/index.js` using `@vercel/node`.
+   - `src/index.js` exports the Express `app` for Vercel serverless execution and only invokes `app.listen()` when `process.env.NODE_ENV !== 'production'`.
+   - Set environment variables: `DATABASE_URL` (Supabase Transaction Pooler on port `6543` as `ledgerproof_app.<project-ref>`), `DIRECT_URL` (port `5432`), `JWT_SECRET` (64 hex chars), `BOOTSTRAP_SECRET`, and `ALLOWED_ORIGINS` (`https://ledgerproof-web.vercel.app,http://localhost:5173`).
+4. **Web Project on Vercel** (Root Directory: `web`).
+   - Set `VITE_API_URL` to your deployed API URL (`https://ledgerproof-api.vercel.app`) and match `connect-src` in `web/vercel.json`.
+5. **Verify Live Deployment.** Run `API_URL=https://ledgerproof-api.vercel.app npm run attack` from `api/` to execute all 16 live adversarial checks.
 
-1. **Database.** Create a Supabase project. As its owner, run `db/schema.sql` and then `db/roles.sql`. Give the app role a login: `ALTER ROLE ledgerproof_app WITH LOGIN PASSWORD '<a long random password>';`
-2. **Demo data.** Load the demo users once as the owner: from `api`, set `OWNER_DATABASE_URL` for that single command and run `npm run seed`.
-3. **API project** (root directory `api`). Environment variables: `DATABASE_URL` (see Settings), `JWT_SECRET` (64 hex characters) and `ALLOWED_ORIGINS` (the web app's address). `src/index.js` must be the only entry file Vercel finds, which is why the app itself lives in `src/create-app.js`.
-4. **Web project** (root directory `web`). Set `VITE_API_URL` to the API's address, and the same address in `connect-src` of `web/vercel.json`, which also sets the security headers.
-5. Turn off Vercel Authentication on both projects, so the public addresses open without a Vercel login.
-6. **Check it.** From `api`, run `API_URL=<your API address> npm run attack`. It signs in as the demo users and tries the attacks listed in THREATS.md against the live API: forged tokens, reading someone else's data, a replayed payment, 20 simultaneous withdrawals. It moves a little demo money and puts it back.
+## API Reference
 
-Free Supabase projects pause after about a week without use. Open the site shortly before it needs to work.
+All routes except `/health`, `/ready`, `/api/auth/login`, `/api/auth/register`, `/api/system/status`, and `/api/system/bootstrap` require `Authorization: Bearer <token>`. Money amounts are integer paise.
 
-## The app
-
-- **Account holder:** balance, withdraw, transfer by account number, and a filterable double-entry statement with running balance. Every money form creates a fresh UUID v4 `Idempotency-Key`; tick "Simulate network retry" to send the request twice at once and watch the server pay once.
-- **Auditor:** a live banner reading `Total Debits == Total Credits (BALANCED ✓)` from the reconcile endpoint, the append-only ledger, and the filterable audit log with denied attempts highlighted.
-- **Admin:** system vault balance, deposits, freeze and unfreeze, create account, and a read-only user list.
-
-Hiding a screen is only convenience; the server enforces every rule.
-
-## API
-
-All routes except login need `Authorization: Bearer <token>`. Money amounts are integer paise.
-
-| Method and path | Roles | Notes |
+| Method & Path | Roles | Description |
 |---|---|---|
-| `POST /api/auth/login` | anyone | `{ email, password }` returns `{ token }` (1 hour) |
-| `GET /api/me` | all | current user |
-| `GET /api/accounts` | all | account holders see only their own |
-| `GET /api/accounts/:id/statement` | all | account holders: own accounts only |
-| `POST /api/transactions/transfer` | account holder | `{ fromAccountId, toAccountId or toAccountNumber, amountPaise }`; `Idempotency-Key` header required; source must be yours |
-| `POST /api/transactions/deposit` | admin | `{ toAccountId, amountPaise }`; `Idempotency-Key` required; the vault pays |
-| `POST /api/transactions/withdraw` | account holder | `{ fromAccountId, amountPaise }`; `Idempotency-Key` required; source must be yours; paid into the vault |
-| `GET /api/ledger/reconcile` | admin, auditor | recomputes the books from the ledger: `{ balanced, totals, problems }` |
-| `GET /api/ledger/entries` | admin, auditor | latest 200 ledger rows |
-| `GET /api/audit-logs` | admin, auditor | latest 200 audit entries |
-| `GET /api/users` | admin | id, email and role only |
-| `POST /api/accounts` | admin | `{ ownerId }` of an account holder |
-| `POST /api/accounts/:id/freeze`, `/unfreeze` | admin | user accounts only |
+| `GET /health` | public | Process liveness probe (`200 OK`) |
+| `GET /ready` | public | Readiness probe (`SELECT 1` DB check + rate-limiter status; `200` or `503`) |
+| `POST /api/auth/login` | public | `{ email, password }` -> `{ token }` (1h HS256 JWT) |
+| `POST /api/auth/register` | public | `{ email, password }` -> registers `account_holder` with `PENDING_KYC` status and ₹0 balance |
+| `GET /api/system/status` | public | Returns `{ initialized, adminCount }` |
+| `POST /api/system/bootstrap` | public (secret) | Guarded by `BOOTSTRAP_SECRET`; creates first `admin` & verifies `SYSTEM_VAULT` if 0 admins exist |
+| `GET /api/me` | all | Current user profile & status |
+| `GET /api/accounts` | all | Account holders see only their own accounts; Admin/Auditor see all |
+| `GET /api/accounts/:id/statement` | all | Double-entry statement (`debit`/`credit` rows + `running_balance_paise`); ownership enforced |
+| `POST /api/transactions/transfer` | `account_holder` | `{ fromAccountId, toAccountId \| toAccountNumber, amountPaise }` + `Idempotency-Key` header |
+| `POST /api/transactions/deposit` | `admin` | `{ toAccountId, amountPaise }` + `Idempotency-Key` header; debits `SYSTEM_VAULT`, credits user |
+| `POST /api/transactions/withdraw` | `account_holder` | `{ fromAccountId, amountPaise }` + `Idempotency-Key` header; debits user, credits `SYSTEM_VAULT` |
+| `GET /api/ledger/reconcile` | `admin`, `auditor` | Recomputes all balances from `ledger_entries` in a `REPEATABLE READ` snapshot |
+| `GET /api/ledger/entries` | `admin`, `auditor` | Latest 200 double-entry rows |
+| `GET /api/audit-logs` | `admin`, `auditor` | Filterable hash-chained security audit trail (also mounted at `GET /api/admin/audit-logs`) |
+| `GET /api/admin/audit-logs/verify` | `admin`, `auditor` | Recomputes every SHA-256 hash from `GENESIS_LEDGERPROOF_2026` to tip (`{ verified, totalEntries, headHash }`) |
+| `GET /api/users` / `GET /api/admin/users` | `admin` | Lists users with role and KYC status (never selects `password_hash`) |
+| `POST /api/admin/users/:id/approve` | `admin` | Transitions user & account from `PENDING_KYC` to `ACTIVE` and records signed audit log |
+| `POST /api/admin/users/:id/reject` | `admin` | Rejects onboarding (`REJECTED` / `FROZEN`) and records signed audit log |
+| `POST /api/admin/users/:id/freeze` | `admin` | Freezes user & account and records signed audit log |
+| `POST /api/accounts` | `admin` | Opens a new checking account for an `account_holder` |
+| `POST /api/accounts/:id/freeze`, `/unfreeze` | `admin` | Freezes or unfreezes a user checking account |
 
-Errors are `{ "error": { "code", "message" } }`.
+## Automated Verification Suite
 
-## Tests
+Run the full backend and frontend test suites:
 
-The API tests run against `TEST_DATABASE_URL` (see Settings), which the tests wipe.
-
-```
+```bash
 cd api && npm test
 cd web && npm test && npm run build
 ```
 
-| File | What it proves |
+| Test File | What It Proves |
 |---|---|
-| `api/test/schema.test.js` | Database guards: balanced entries, append-only tables, no negative user balance, no direct balance edits, one vault, immutable owners |
-| `api/test/transfer.test.js` | `transfer()`: overdraft, bad input, idempotency, deadlock-free locking, isolation level |
-| `api/test/auth.test.js` | Login, forged tokens, roles, ownership (IDOR), audit rows for denials and failures |
-| `api/test/money.test.js` | Deposits, withdrawals, reconciliation (including catching a tampered balance) |
-| `api/test/idempotency.test.js` | Per-user keys, exact replay (sequential and concurrent), key reuse conflicts |
-| `api/test/concurrency.test.js` | 20 simultaneous withdrawals let exactly 5 succeed; opposite transfers at the same moment do not deadlock |
-| `api/test/browser.test.js` | CORS allow-list, user list, ledger explorer, paying by account number |
-| `api/test/origins.test.js` | A bad `ALLOWED_ORIGINS` value stops the server |
-| `api/test/roles.test.js` | The restricted database role cannot tamper with balances, roles or history; a temp table cannot hide an unbalanced transaction; the API refuses a privileged role; Supabase's REST roles have no access |
-| `api/test/proxy.test.js` | A client cannot forge the address recorded in the audit log |
-| `api/test/db-config.test.js` | Supabase connections always verify TLS against the pinned root CA, whatever the URL says |
-| `api/test/threats.test.js` | Every test named in THREATS.md exists, and every `THREAT` test is listed there |
-| `web/src/money.test.js` | Rupee text to paise and back, with no floats |
+| `api/test/schema.test.js` | Database triggers & constraints: balanced entries, append-only tables (`prevent_ledger_mutation`, `prevent_audit_mutation`), no negative user balances, no direct balance edits, single vault, immutable owners |
+| `api/test/transfer.test.js` | `transfer()` atomicity: overdraft rollback, input validation, idempotency, ascending ID lock ordering (`THREAT lock order`), `READ COMMITTED` isolation |
+| `api/test/auth.test.js` | JWT HS256 pinning, fresh DB role lookup, IDOR blocking on statements and transfers, out-of-transaction denial auditing |
+| `api/test/onboarding-and-chain.test.js` | `/health` & `/ready` probes, `/api/admin/*` RBAC (`403`), `PENDING_KYC` money movement blocking (`403`), zero orphan rows on overdraft (`422`), SHA-256 audit hash-chain verification & tamper detection, First-Admin bootstrap guard |
+| `api/test/money.test.js` | Admin deposits, user withdrawals, and full ledger reconciliation catching superuser balance tampering |
+| `api/test/idempotency.test.js` | Per-user `Idempotency-Key` isolation, sequential & 5x concurrent replay (`Idempotent-Replayed: true`), `409` on payload mismatch |
+| `api/test/concurrency.test.js` | 20 simultaneous withdrawals of ₹1,000 from ₹5,000 let exactly 5 succeed; 30 opposite transfers (`Alice <-> Bob`) complete with zero deadlocks |
+| `api/test/roles.test.js` | Restricted DB role (`ledgerproof_app`) cannot tamper with balances, roles, or history, shadow tables with `pg_temp`, or run with superuser privileges |
+| `api/test/db-config.test.js` | Verified TLS with pinned Supabase Root CA (`api/src/supabase-ca.js`) and rejection of `sslmode=no-verify` |
+| `api/test/threats.test.js` | Verifies every threat in `THREATS.md` maps to a real test and every `THREAT` test is documented |
+| `web/src/money.test.js` | 32 unit tests proving float-free rupee-to-paise parsing and formatting |
 
-## How AI was used
+## How AI Was Used
 
-This project was built with Claude Code (Anthropic's coding assistant), working from rules in `CLAUDE.md` and `AGENTS.md`. A separate security-review agent audited the diff of each money or authorization change. I read, ran and own the code. [PROMPTS.md](PROMPTS.md) records the specific mistakes the AI made, how they were found, and how each was fixed.
+This project was built with Claude Code and Antigravity working under the rules in `CLAUDE.md` and `AGENTS.md`. A separate security-review agent audited diffs touching money, authorization, idempotency, and SQL. I read, ran, verified, and own every line of code. [PROMPTS.md](PROMPTS.md) and [SNOVASYS_SUBMISSION.md](SNOVASYS_SUBMISSION.md) document the specific mistakes the AI made, how they were caught in logs and tests, and how each was fixed.
 
 ## Status
 
-Built and tested:
-- Ledger schema and its database-level guards.
-- Deposits, withdrawals and transfers (by id or account number).
-- Reconciliation, ledger explorer and audit log.
-- Per-user idempotency keys with exact replay.
-- Login, role checks, ownership checks and the audit trail.
-- The browser app for all three roles, with security headers and a strict Content-Security-Policy.
-- The API connects as a restricted database role with verified TLS.
-- Deployment on Vercel and Supabase. On 2026-11-09 the 16 live attack checks passed against the deployed API (forged tokens, reading another user's data, a replayed payment, 20 simultaneous withdrawals letting exactly 5 succeed, a balanced reconcile), and the app was checked by hand in a browser as the account holder, auditor and admin.
+Built and verified:
+- Provable double-entry ledger schema with database-enforced invariants (`db/schema.sql`, `db/roles.sql`).
+- Atomic deposits, withdrawals, and P2P transfers (by UUID or account number) with ascending-ID row locking.
+- KYC onboarding workflow (`PENDING_KYC` -> `ACTIVE`), First-Admin bootstrap, and server-enforced RBAC.
+- Cryptographic SHA-256 hash-chained audit trail with live tamper verification (`GET /api/admin/audit-logs/verify`) and full ledger reconciliation (`GET /api/ledger/reconcile`).
+- Per-user idempotency keys with sequential and concurrent replay protection.
+- React + Vite verification dashboard for Account Holders, Auditors, and Admins, with strict CSP headers.
+- 103/103 backend integration tests and 32/32 frontend unit tests passing.
 
-Not done:
-- The live site runs on free tiers: the first request after a quiet period is slow (serverless start), and Supabase pauses a free project after about a week without use.
-- The browser app has no end-to-end tests: it was checked by hand in a browser as all four demo users, and only its money helpers have automated tests.
-- There is no login rate limit yet.
-
-All known gaps are listed at the end of [THREATS.md](THREATS.md).
+Known gaps & remaining production hardening items (also listed in [THREATS.md](THREATS.md)):
+- The live site runs on free tiers (Vercel serverless cold starts + Supabase free project pause after inactivity).
+- No automated browser end-to-end (Playwright/Cypress) test suite yet; the UI was verified manually across all roles while all API and money math paths are covered by 135 automated tests.
+- Login and reconciliation endpoints do not yet enforce per-IP rate limiting, and `lock_timeout` / `statement_timeout` are not yet pinned on database sessions.

@@ -7,7 +7,7 @@ export async function assertRestrictedRole(pool) {
             r.rolbypassrls AS bypasses_rls,
             COALESCE((SELECT tableowner = current_user FROM pg_tables WHERE schemaname = 'public' AND tablename = 'accounts'), false) AS owns_tables,
             has_column_privilege(current_user, 'public.accounts', 'balance_paise', 'UPDATE') AS can_edit_balances,
-            has_table_privilege(current_user, 'public.users', 'UPDATE') AS can_edit_users,
+            has_column_privilege(current_user, 'public.users', 'role', 'UPDATE') AS can_edit_users,
             has_table_privilege(current_user, 'public.ledger_entries', 'DELETE') AS can_delete_history
        FROM pg_roles r WHERE r.rolname = current_user`,
   );

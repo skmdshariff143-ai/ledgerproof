@@ -3,6 +3,7 @@ import { Badge } from "../components/Badge.jsx";
 import { DataTable } from "../components/DataTable.jsx";
 import { Loaded } from "../components/Loaded.jsx";
 import { MoneyForm } from "../components/MoneyForm.jsx";
+import { ReconcileBanner } from "../components/ReconcileBanner.jsx";
 import { Section } from "../components/Section.jsx";
 import { formatTime, shortId } from "../format.js";
 import { useLoad } from "../hooks.js";
@@ -12,7 +13,7 @@ import { useSession } from "../session.jsx";
 export function AdminView() {
   const { call } = useSession();
   const accounts = useLoad("/api/accounts");
-  const users = useLoad("/api/users");
+  const users = useLoad("/api/admin/users");
   const [busyId, setBusyId] = useState(null);
   const [message, setMessage] = useState(null);
   const [newOwner, setNewOwner] = useState("");
@@ -22,6 +23,7 @@ export function AdminView() {
     try {
       setMessage({ ok: true, text: await run() });
       accounts.reload();
+      users.reload();
     } catch (err) {
       setMessage({ ok: false, text: `${label} failed: ${err.message}` });
     }
@@ -32,6 +34,14 @@ export function AdminView() {
     return act(freeze ? "Freeze" : "Unfreeze", async () => {
       await call("POST", `/api/accounts/${account.id}/${freeze ? "freeze" : "unfreeze"}`);
       return `${account.account_number} is now ${freeze ? "frozen" : "active"}.`;
+    }).finally(() => setBusyId(null));
+  };
+
+  const onboardAction = (user, action) => {
+    setBusyId(user.id);
+    return act(action, async () => {
+      await call("POST", `/api/admin/users/${user.id}/${action}`);
+      return `${user.email} (${action}) completed.`;
     }).finally(() => setBusyId(null));
   };
 
@@ -55,6 +65,7 @@ export function AdminView() {
             const holders = userList.filter((u) => u.role === "account_holder");
             return (
               <>
+                <ReconcileBanner />
                 {message && <p className={message.ok ? "notice" : "error"} role="status">{message.text}</p>}
 
                 <div className="two-col">
@@ -63,7 +74,7 @@ export function AdminView() {
                     <p className="balance money">{formatRupees(vault.balance_paise)}</p>
                     <p><code>{vault.account_number}</code> <Badge value={vault.status} /></p>
                   </Section>
-                  <Section title="Deposit">
+                  <Section title="Deposit (Initial / Test Fund Tool)">
                     <MoneyForm
                       submitLabel="Deposit"
                       fields={[
@@ -96,8 +107,8 @@ export function AdminView() {
                       {
                         label: "Action",
                         render: (a) => (
-                          <button type="button" className="secondary" disabled={busyId === a.id} onClick={() => setFrozen(a, a.status === "active")}>
-                            {a.status === "active" ? "Freeze" : "Unfreeze"}
+                          <button type="button" className="secondary" disabled={busyId === a.id} onClick={() => setFrozen(a, a.status?.toLowerCase() === "active")}>
+                            {a.status?.toLowerCase() === "active" ? "Freeze" : "Unfreeze"}
                           </button>
                         ),
                       },
@@ -117,15 +128,41 @@ export function AdminView() {
                   </form>
                 </Section>
 
-                <Section title="Users (read-only)">
+                <Section title="Users & KYC Onboarding">
                   <DataTable
                     rows={userList}
                     rowKey={(u) => u.id}
                     columns={[
                       { label: "Email", render: (u) => u.email },
                       { label: "Role", render: (u) => <Badge value={u.role} /> },
+                      { label: "Status", render: (u) => <Badge value={u.status ?? "active"} /> },
                       { label: "Id", render: (u) => <code className="ref" title={u.id}>{shortId(u.id)}</code> },
                       { label: "Created", render: (u) => formatTime(u.created_at) },
+                      {
+                        label: "Onboarding",
+                        render: (u) =>
+                          u.role === "account_holder" ? (
+                            <div className="filters">
+                              {u.status?.toLowerCase() !== "active" && (
+                                <button type="button" disabled={busyId === u.id} onClick={() => onboardAction(u, "approve")}>
+                                  Approve KYC
+                                </button>
+                              )}
+                              {u.status?.toLowerCase() === "pending_kyc" && (
+                                <button type="button" className="secondary" disabled={busyId === u.id} onClick={() => onboardAction(u, "reject")}>
+                                  Reject
+                                </button>
+                              )}
+                              {u.status?.toLowerCase() === "active" && (
+                                <button type="button" className="secondary" disabled={busyId === u.id} onClick={() => onboardAction(u, "freeze")}>
+                                  Freeze User
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted small">—</span>
+                          ),
+                      },
                     ]}
                   />
                 </Section>

@@ -66,16 +66,22 @@ async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }
   // A parallel request with the same key may have committed while we waited for the lock.
   const earlier = await findExisting(client, { actor, idempotencyKey }, requestHash);
   if (earlier) return earlier;
-  if (source.status !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
+  const sourceStatus = source.status?.toLowerCase();
+  const destStatus = destination.status?.toLowerCase();
+  if (sourceStatus === "pending_kyc") throw fail("KYC_PENDING", "account is pending KYC approval");
+  if (sourceStatus !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
   // Funds are checked before the destination's status, so an under-funded request cannot
   // be used to learn whether someone else's account is frozen.
   if (source.account_type !== "system_vault" && !source.has_funds) {
     throw fail("INSUFFICIENT_FUNDS", "insufficient funds");
   }
-  if (destination.status !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
+  if (destStatus === "pending_kyc") throw fail("KYC_PENDING", "recipient account is pending KYC approval");
+  if (destStatus !== "active") throw fail("ACCOUNT_FROZEN", "account is frozen");
+  const type = transactionType(source, destination);
   const tx = await client.query(
-    "INSERT INTO transactions (type, initiated_by) VALUES ($1, $2) RETURNING id",
-    [transactionType(source, destination), actor.id],
+    `INSERT INTO transactions (idempotency_key, type, status, amount, source_account_id, destination_account_id, initiated_by)
+     VALUES ($1, $2, 'POSTED', $3, $4, $5, $6) RETURNING id`,
+    [`${actor.id}:${idempotencyKey}`, type, amountPaise, from, to, actor.id],
   );
   const transactionId = tx.rows[0].id;
   await client.query(
@@ -90,7 +96,6 @@ async function post(client, { actor, ip, from, to, amountPaise, idempotencyKey }
   );
   // Same action and target names the HTTP routes use for denials and failures,
   // so an auditor filtering by "deposit" sees successes and failures alike.
-  const type = transactionType(source, destination);
   await audit(client, {
     actor,
     action: { deposit: "deposit", withdrawal: "withdraw", transfer: "transfer" }[type],

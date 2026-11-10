@@ -1,13 +1,14 @@
 import cors from "cors";
 import express from "express";
-import { audit } from "./audit.js";
-import { allowRoles, authenticate, deny, login } from "./auth.js";
+import { audit, verifyAuditChain } from "./audit.js";
+import { allowRoles, authenticate, deny, login, registerUser } from "./auth.js";
 import { inTransaction } from "./db.js";
 import { fail, HTTP_STATUS, isUuid } from "./errors.js";
+import { hashPassword } from "./password.js";
 import { transfer, validateAmountAndKey } from "./transfer.js";
 
 const ALL_ROLES = ["admin", "account_holder", "auditor"];
-const ACCOUNT_COLUMNS = "id, account_number, account_type, owner_id, status, balance_paise::text AS balance_paise, created_at";
+const ACCOUNT_COLUMNS = "id, account_number, account_type, owner_id, owner_id AS user_id, currency, status, balance_paise::text AS balance_paise, balance_paise::text AS balance, version, created_at";
 
 function requireUuid(value, name) {
   if (!isUuid(value)) throw fail("INVALID_INPUT", `${name} must be a lowercase UUID`);
@@ -61,8 +62,71 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
     }
   }
 
+  app.get("/health", (req, res) => {
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  app.get("/ready", async (req, res) => {
+    try {
+      await pool.query("SELECT 1");
+      res.status(200).json({ status: "healthy", database: "connected", rateLimiter: "ready" });
+    } catch (err) {
+      res.status(503).json({ status: "degraded", database: "unreachable", error: err.message });
+    }
+  });
+
   app.post("/api/auth/login", async (req, res) => {
     res.json({ token: await login(pool, jwtSecret, req.body ?? {}, req.ip) });
+  });
+
+  app.post("/api/auth/register", async (req, res) => {
+    const result = await registerUser(pool, jwtSecret, req.body ?? {}, req.ip);
+    res.status(201).json(result);
+  });
+
+  app.get("/api/system/status", async (req, res) => {
+    const { rows } = await pool.query("SELECT count(*)::int AS admins FROM users WHERE lower(role) = 'admin'");
+    res.json({ initialized: rows[0].admins > 0, adminCount: rows[0].admins });
+  });
+
+  app.post("/api/system/bootstrap", async (req, res) => {
+    const body = req.body ?? {};
+    const expectedSecret = process.env.BOOTSTRAP_SECRET;
+    const providedSecret = req.get("X-Bootstrap-Secret") ?? body.bootstrapSecret ?? body.secret;
+    if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+      await audit(pool, { actor: null, action: "ADMIN_BOOTSTRAP", ip: req.ip, details: { reason: "invalid_secret" }, outcome: "denied" })
+        .catch(() => {});
+      throw fail("FORBIDDEN", "valid bootstrap secret is required");
+    }
+    const email = (body.email ?? "admin@ledgerline.com").trim().toLowerCase();
+    const password = body.password ?? "Admin@123";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || typeof password !== "string" || password.length < 8) {
+      throw fail("INVALID_INPUT", "valid email and password (min 8 chars) required");
+    }
+    const passwordHash = await hashPassword(password);
+    const result = await inTransaction(pool, async (client) => {
+      const existingAdmins = await client.query("SELECT count(*)::int AS count FROM users WHERE lower(role) = 'admin'");
+      if (existingAdmins.rows[0].count > 0) {
+        throw fail("ALREADY_BOOTSTRAPPED", "first admin already exists");
+      }
+      const userRes = await client.query(
+        "INSERT INTO users (email, password_hash, role, status) VALUES ($1, $2, 'admin', 'ACTIVE') RETURNING id, email, role, status, created_at",
+        [email, passwordHash],
+      );
+      const adminUser = userRes.rows[0];
+      const vaultRes = await client.query("SELECT id, account_number FROM accounts WHERE account_type = 'system_vault' LIMIT 1");
+      await audit(client, {
+        actor: adminUser,
+        action: "ADMIN_BOOTSTRAP",
+        targetType: "user",
+        target: `user:${adminUser.id}`,
+        ip: req.ip,
+        details: { email: adminUser.email, vaultId: vaultRes.rows[0]?.id },
+        outcome: "success",
+      });
+      return { admin: adminUser, vault: vaultRes.rows[0] };
+    });
+    res.status(201).json(result);
   });
 
   route("get", "/api/me", ALL_ROLES, (req, res) => {
@@ -243,6 +307,57 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
     res.json({ users: rows });
   });
 
+  route("get", "/api/admin/users", ["admin"], async (req, res) => {
+    const { rows } = await pool.query("SELECT id, email, role, status, created_at FROM users ORDER BY created_at, email");
+    await audit(pool, { actor: req.user, action: "read_users", ip: req.ip, outcome: "success" });
+    res.json({ users: rows });
+  });
+
+  for (const [subpath, userStatus, accountStatus, auditAction] of [
+    ["approve", "active", "active", "USER_ONBOARD_APPROVED"],
+    ["reject", "rejected", "frozen", "USER_ONBOARD_REJECTED"],
+    ["freeze", "frozen", "frozen", "ACCOUNT_FROZEN"],
+  ]) {
+    route("post", `/api/admin/users/:id/${subpath}`, ["admin"], async (req, res) => {
+      const userId = req.params.id;
+      const target = `user:${userId}`;
+      const result = await audited(req, auditAction, target, () => {
+        requireUuid(userId, "user id");
+        return inTransaction(pool, async (client) => {
+          const userRes = await client.query(
+            "UPDATE users SET status = $2 WHERE id = $1 AND lower(role) = 'account_holder' RETURNING id, email, role, status, created_at",
+            [userId, userStatus],
+          );
+          if (userRes.rows.length === 0) throw fail("USER_NOT_FOUND", "account holder not found");
+          const updatedUser = userRes.rows[0];
+          const existingAcc = await client.query(
+            `UPDATE accounts SET status = $2 WHERE owner_id = $1 AND account_type = 'user_checking' RETURNING ${ACCOUNT_COLUMNS}`,
+            [userId, accountStatus],
+          );
+          let account = existingAcc.rows[0] ?? null;
+          if (!account && subpath === "approve") {
+            const created = await client.query(
+              `INSERT INTO accounts (account_type, owner_id, status, currency) VALUES ('user_checking', $1, 'active', 'INR') RETURNING ${ACCOUNT_COLUMNS}`,
+              [userId],
+            );
+            account = created.rows[0];
+          }
+          await audit(client, {
+            actor: req.user,
+            action: auditAction,
+            targetType: "user",
+            target,
+            ip: req.ip,
+            details: { userId, status: userStatus, accountId: account?.id ?? null },
+            outcome: "success",
+          });
+          return { user: updatedUser, account };
+        });
+      });
+      res.json(result);
+    });
+  }
+
   // The double-entry ledger itself: every row is one side of a transaction.
   route("get", "/api/ledger/entries", ["admin", "auditor"], async (req, res) => {
     const { rows } = await pool.query(
@@ -259,13 +374,45 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
     res.json({ entries: rows });
   });
 
-  route("get", "/api/audit-logs", ["admin", "auditor"], async (req, res) => {
+  async function listAuditLogs(req, res) {
+    const { action, outcome, actorRole, limit = "200", offset = "0" } = req.query ?? {};
+    const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 500);
+    const parsedOffset = Math.max(Number.parseInt(offset, 10) || 0, 0);
+    const conditions = [];
+    const params = [];
+    if (typeof action === "string" && action.trim()) {
+      params.push(action.trim());
+      conditions.push(`action = $${params.length}`);
+    }
+    if (typeof outcome === "string" && outcome.trim()) {
+      params.push(outcome.trim());
+      conditions.push(`outcome = $${params.length}`);
+    }
+    if (typeof actorRole === "string" && actorRole.trim()) {
+      params.push(actorRole.trim());
+      conditions.push(`lower(actor_role) = lower($${params.length})`);
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(parsedLimit, parsedOffset);
     const { rows } = await pool.query(
-      `SELECT id, actor_user_id, actor_role, action, target, ip, details, outcome, created_at
-         FROM audit_log ORDER BY id DESC LIMIT 200`,
+      `SELECT id, seq, actor_user_id, actor_id, actor_role, action, target_type, target, target_id,
+              ip, ip_address, details, metadata, outcome, previous_hash, entry_hash, created_at
+         FROM audit_log
+         ${whereClause}
+        ORDER BY id DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
     );
     await audit(pool, { actor: req.user, action: "read_audit_log", ip: req.ip, outcome: "success" });
     res.json({ entries: rows });
+  }
+
+  route("get", "/api/audit-logs", ["admin", "auditor"], listAuditLogs);
+  route("get", "/api/admin/audit-logs", ["admin", "auditor"], listAuditLogs);
+
+  route("get", "/api/admin/audit-logs/verify", ["admin", "auditor"], async (req, res) => {
+    const report = await verifyAuditChain(pool);
+    res.json(report);
   });
 
   app.use((req, res) => {

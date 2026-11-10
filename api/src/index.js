@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import express from "express";
 import pg from "pg";
 import { createApp } from "./create-app.js";
@@ -33,4 +34,12 @@ ready.catch((err) => console.error(err.message));
 const app = express();
 app.disable("x-powered-by");
 app.use(createApp(pool, { jwtSecret: JWT_SECRET, allowedOrigins, trustProxy: onVercel ? 1 : false, ready }));
+
+if (process.env.NODE_ENV !== "production" && !onVercel && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const port = Number(process.env.PORT ?? 3000);
+  app.listen(port, () => {
+    console.log(`LedgerProof API listening on port ${port}`);
+  });
+}
+
 export default app;

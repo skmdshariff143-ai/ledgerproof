@@ -53,6 +53,14 @@ export function SessionProvider({ children }) {
     setUser(me.data.user);
   }, []);
 
+  const register = useCallback(async (email, password) => {
+    const { data } = await request("POST", "/api/auth/register", { body: { email, password } });
+    const me = await request("GET", "/api/me", { token: data.token });
+    saveToken(data.token);
+    setToken(data.token);
+    setUser(me.data.user);
+  }, []);
+
   // An authenticated request; an expired or revoked token (401) signs the user out.
   const call = useCallback(
     async (method, path, options) => {
@@ -66,7 +74,7 @@ export function SessionProvider({ children }) {
     [token, logout],
   );
 
-  const value = useMemo(() => ({ ready: !token || Boolean(user), user, login, logout, call }), [token, user, login, logout, call]);
+  const value = useMemo(() => ({ ready: !token || Boolean(user), user, login, register, logout, call }), [token, user, login, register, logout, call]);
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 

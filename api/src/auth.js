@@ -36,9 +36,15 @@ export function authenticate(pool, secret) {
       throw fail("UNAUTHENTICATED", "a valid bearer token is required");
     }
     if (!isUuid(userId)) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
-    const { rows } = await pool.query("SELECT id, email, role FROM users WHERE id = $1", [userId]);
+    const { rows } = await pool.query("SELECT id, email, role, status FROM users WHERE id = $1", [userId]);
     if (rows.length === 0) throw fail("UNAUTHENTICATED", "a valid bearer token is required");
-    req.user = rows[0];
+    const row = rows[0];
+    req.user = {
+      id: row.id,
+      email: row.email,
+      role: row.role.toLowerCase(),
+      status: row.status,
+    };
     next();
   };
 }
@@ -50,8 +56,57 @@ export async function deny(pool, req, action, target) {
 }
 
 export function allowRoles(pool, roles) {
+  const normalized = roles.map((r) => r.toLowerCase());
   return async (req, res, next) => {
-    if (!roles.includes(req.user.role)) await deny(pool, req, `${req.method} ${req.route.path}`, req.originalUrl);
+    if (!normalized.includes(req.user.role.toLowerCase())) {
+      await deny(pool, req, `${req.method} ${req.route.path}`, req.originalUrl);
+    }
     next();
   };
+}
+
+// Registers a new account_holder in PENDING_KYC status with a 0-balance PENDING_KYC account.
+// Never trusts role or status claims from the request body.
+export async function registerUser(pool, secret, { email, password }, ip) {
+  if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    throw fail("INVALID_INPUT", "a valid email is required");
+  }
+  if (typeof password !== "string" || password.length < 8) {
+    throw fail("INVALID_INPUT", "password must be at least 8 characters");
+  }
+  const cleanEmail = email.trim().toLowerCase();
+  const passwordHash = await hashPassword(password);
+  const client = await pool.connect();
+  let broken = false;
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT id FROM users WHERE email = $1", [cleanEmail]);
+    if (existing.rows.length > 0) throw fail("USER_EXISTS", "an account with this email already exists");
+    const userRes = await client.query(
+      "INSERT INTO users (email, password_hash, role, status) VALUES ($1, $2, 'account_holder', 'PENDING_KYC') RETURNING id, email, role, status, created_at",
+      [cleanEmail, passwordHash],
+    );
+    const user = userRes.rows[0];
+    const accRes = await client.query(
+      "INSERT INTO accounts (account_type, owner_id, status, currency) VALUES ('user_checking', $1, 'PENDING_KYC', 'INR') RETURNING id, account_number, status, balance_paise::text AS balance_paise",
+      [user.id],
+    );
+    await audit(client, {
+      actor: user,
+      action: "USER_REGISTERED",
+      targetType: "user",
+      target: `user:${user.id}`,
+      ip,
+      details: { email: user.email, accountId: accRes.rows[0].id, status: "PENDING_KYC" },
+      outcome: "success",
+    });
+    await client.query("COMMIT");
+    const token = jwt.sign({}, secret, { algorithm: "HS256", subject: user.id, expiresIn: TOKEN_LIFETIME });
+    return { token, user, account: accRes.rows[0] };
+  } catch (err) {
+    broken = await client.query("ROLLBACK").then(() => false, () => true);
+    throw err;
+  } finally {
+    client.release(broken);
+  }
 }

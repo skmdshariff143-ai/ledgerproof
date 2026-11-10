@@ -94,6 +94,7 @@ function AuditLog() {
               { label: "Action", render: (e) => e.action },
               { label: "Target", render: (e) => e.target ?? "" },
               { label: "IP", render: (e) => e.ip ?? "" },
+              { label: "Hash", render: (e) => <code className="ref" title={e.entry_hash ?? ""}>{shortId(e.entry_hash)}</code> },
               { label: "Details", render: (e) => <code className="details" title={JSON.stringify(e.details)}>{e.details ? JSON.stringify(e.details) : ""}</code> },
             ]}
           />

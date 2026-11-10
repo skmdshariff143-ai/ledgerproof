@@ -57,7 +57,14 @@ export function HolderView() {
                     <p><code>{account.account_number}</code> <Badge value={account.status} /></p>
                   </div>
                 </div>
-                {account.status === "frozen" && <p className="error">This account is frozen. Money cannot move until an admin unfreezes it.</p>}
+                {account.status?.toLowerCase() === "pending_kyc" && (
+                  <p className="error" role="status">
+                    KYC Status: PENDING_KYC — Your account is awaiting Admin onboarding approval. You cannot send or receive funds until approved.
+                  </p>
+                )}
+                {account.status?.toLowerCase() === "frozen" && (
+                  <p className="error" role="status">This account is frozen. Money cannot move until an admin unfreezes it.</p>
+                )}
               </Section>
 
               <div className="two-col">

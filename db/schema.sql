@@ -4,7 +4,8 @@ CREATE TABLE users (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   email         text NOT NULL UNIQUE CHECK (email = lower(email)),
   password_hash text NOT NULL,
-  role          text NOT NULL CHECK (role IN ('admin', 'account_holder', 'auditor')),
+  role          text NOT NULL CHECK (lower(role) IN ('admin', 'account_holder', 'auditor')),
+  status        text NOT NULL DEFAULT 'active' CHECK (lower(status) IN ('pending_kyc', 'active', 'frozen', 'rejected')),
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
@@ -15,10 +16,14 @@ CREATE SEQUENCE account_number_seq;
 CREATE TABLE accounts (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   account_number text NOT NULL UNIQUE DEFAULT 'LP' || lpad(nextval('account_number_seq')::text, 10, '0'),
-  account_type   text NOT NULL CHECK (account_type IN ('system_vault', 'user_checking')),
+  account_type   text NOT NULL DEFAULT 'user_checking' CHECK (account_type IN ('system_vault', 'user_checking')),
   owner_id       uuid REFERENCES users (id),
-  status         text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'frozen')),
+  user_id        uuid GENERATED ALWAYS AS (owner_id) STORED,
+  currency       text NOT NULL DEFAULT 'INR',
+  status         text NOT NULL DEFAULT 'active' CHECK (lower(status) IN ('pending_kyc', 'active', 'frozen')),
   balance_paise  bigint NOT NULL DEFAULT 0,
+  balance        bigint GENERATED ALWAYS AS (balance_paise) STORED,
+  version        integer NOT NULL DEFAULT 1,
   created_at     timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT vault_has_no_owner CHECK ((account_type = 'system_vault') = (owner_id IS NULL)),
   -- Only the vault may go below zero: it is where deposited money comes from.
@@ -30,20 +35,28 @@ CREATE UNIQUE INDEX accounts_single_vault ON accounts (account_type) WHERE accou
 INSERT INTO accounts (account_number, account_type) VALUES ('VAULT-0001', 'system_vault');
 
 CREATE TABLE transactions (
-  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  type         text NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
-  initiated_by uuid NOT NULL REFERENCES users (id),
-  created_at   timestamptz NOT NULL DEFAULT now()
+  id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  idempotency_key        text UNIQUE,
+  type                   text NOT NULL CHECK (lower(type) IN ('deposit', 'withdrawal', 'transfer')),
+  status                 text NOT NULL DEFAULT 'POSTED' CHECK (status IN ('POSTED', 'FAILED')),
+  amount                 bigint CHECK (amount IS NULL OR amount > 0),
+  source_account_id      uuid REFERENCES accounts (id),
+  destination_account_id uuid REFERENCES accounts (id),
+  initiated_by           uuid NOT NULL REFERENCES users (id),
+  reference              text,
+  created_at             timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE ledger_entries (
   id             bigserial PRIMARY KEY,
   transaction_id uuid   NOT NULL REFERENCES transactions (id),
   account_id     uuid   NOT NULL REFERENCES accounts (id),
-  direction      text   NOT NULL CHECK (direction IN ('debit', 'credit')),
+  direction      text   NOT NULL CHECK (lower(direction) IN ('debit', 'credit')),
   amount_paise   bigint NOT NULL CHECK (amount_paise > 0),
+  amount         bigint GENERATED ALWAYS AS (amount_paise) STORED,
   -- Set by the ledger_entries_apply trigger; any value the client sends is overwritten.
   running_balance_paise bigint NOT NULL,
+  balance_after  bigint GENERATED ALWAYS AS (running_balance_paise) STORED,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 
@@ -65,17 +78,28 @@ CREATE TABLE idempotency_keys (
 
 -- actor_role is copied at the time of the event, so a later role change cannot rewrite history.
 -- actor_user_id is NULL only for anonymous events such as a failed login.
+-- Every row is cryptographically hash-chained with SHA-256 (previous_hash -> entry_hash).
 CREATE TABLE audit_log (
   id            bigserial PRIMARY KEY,
+  seq           bigint GENERATED ALWAYS AS (id) STORED,
   actor_user_id uuid REFERENCES users (id),
+  actor_id      uuid GENERATED ALWAYS AS (actor_user_id) STORED,
   actor_role    text,
   action        text NOT NULL,
+  target_type   text,
   target        text,
+  target_id     text GENERATED ALWAYS AS (target) STORED,
   ip            text,
+  ip_address    text GENERATED ALWAYS AS (ip) STORED,
   details       jsonb,
-  outcome       text NOT NULL CHECK (outcome IN ('success', 'denied', 'error')),
+  metadata      jsonb GENERATED ALWAYS AS (details) STORED,
+  outcome       text NOT NULL DEFAULT 'success' CHECK (outcome IN ('success', 'denied', 'error')),
+  previous_hash text NOT NULL DEFAULT 'GENESIS_LEDGERPROOF_2026',
+  entry_hash    text NOT NULL UNIQUE,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE VIEW audit_logs AS SELECT * FROM audit_log;
 
 -- Append-only: block UPDATE, DELETE and TRUNCATE on history tables.
 CREATE FUNCTION reject_change() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
@@ -84,19 +108,31 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION prevent_ledger_mutation() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+CREATE FUNCTION prevent_audit_mutation() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
 CREATE TRIGGER ledger_entries_append_only
   BEFORE UPDATE OR DELETE ON ledger_entries
-  FOR EACH ROW EXECUTE FUNCTION reject_change();
+  FOR EACH ROW EXECUTE FUNCTION prevent_ledger_mutation();
 CREATE TRIGGER ledger_entries_no_truncate
   BEFORE TRUNCATE ON ledger_entries
-  FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
+  FOR EACH STATEMENT EXECUTE FUNCTION prevent_ledger_mutation();
 
 CREATE TRIGGER transactions_append_only
   BEFORE UPDATE OR DELETE ON transactions
-  FOR EACH ROW EXECUTE FUNCTION reject_change();
+  FOR EACH ROW EXECUTE FUNCTION prevent_ledger_mutation();
 CREATE TRIGGER transactions_no_truncate
   BEFORE TRUNCATE ON transactions
-  FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
+  FOR EACH STATEMENT EXECUTE FUNCTION prevent_ledger_mutation();
 
 CREATE TRIGGER idempotency_keys_append_only
   BEFORE UPDATE OR DELETE ON idempotency_keys
@@ -147,13 +183,14 @@ DECLARE
 BEGIN
   UPDATE accounts
      SET balance_paise = balance_paise
-                         + CASE NEW.direction WHEN 'credit' THEN NEW.amount_paise ELSE -NEW.amount_paise END
+                         + CASE lower(NEW.direction) WHEN 'credit' THEN NEW.amount_paise ELSE -NEW.amount_paise END,
+         version = version + 1
    WHERE id = NEW.account_id
   RETURNING balance_paise, status INTO NEW.running_balance_paise, account_status;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'account % does not exist', NEW.account_id;
   END IF;
-  IF account_status <> 'active' THEN
+  IF lower(account_status) <> 'active' THEN
     RAISE EXCEPTION 'account % is %', NEW.account_id, account_status;
   END IF;
   RETURN NEW;
@@ -164,12 +201,37 @@ CREATE TRIGGER ledger_entries_apply
   BEFORE INSERT ON ledger_entries
   FOR EACH ROW EXECUTE FUNCTION apply_ledger_entry();
 
+-- Automatically chains audit rows and computes SHA-256 entry_hash inside the active transaction.
+CREATE FUNCTION chain_audit_log() RETURNS trigger LANGUAGE plpgsql
+  SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  prev text;
+  payload text;
+  iso_ts text;
+BEGIN
+  PERFORM pg_advisory_xact_lock(20261110);
+  SELECT entry_hash INTO prev FROM audit_log ORDER BY id DESC LIMIT 1 FOR UPDATE;
+  NEW.previous_hash := COALESCE(prev, 'GENESIS_LEDGERPROOF_2026');
+  iso_ts := to_char(NEW.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+  payload := NEW.previous_hash || '|' || NEW.id::text || '|' || COALESCE(NEW.actor_user_id::text, 'ANONYMOUS')
+             || '|' || COALESCE(NEW.actor_role, 'ANONYMOUS') || '|' || NEW.action
+             || '|' || COALESCE(NEW.target, '') || '|' || COALESCE(NEW.details::text, '{}')
+             || '|' || iso_ts;
+  NEW.entry_hash := encode(sha256(convert_to(payload, 'UTF8')), 'hex');
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER audit_log_chain
+  BEFORE INSERT ON audit_log
+  FOR EACH ROW EXECUTE FUNCTION chain_audit_log();
+
 CREATE TRIGGER audit_log_append_only
   BEFORE UPDATE OR DELETE ON audit_log
-  FOR EACH ROW EXECUTE FUNCTION reject_change();
+  FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
 CREATE TRIGGER audit_log_no_truncate
   BEFORE TRUNCATE ON audit_log
-  FOR EACH STATEMENT EXECUTE FUNCTION reject_change();
+  FOR EACH STATEMENT EXECUTE FUNCTION prevent_audit_mutation();
 
 -- Double entry: checked at COMMIT, so a transaction may insert its rows one by one.
 -- search_path is pinned with pg_temp last: otherwise a session could create a temp table named
@@ -180,8 +242,8 @@ DECLARE
   debits  bigint;
   credits bigint;
 BEGIN
-  SELECT COALESCE(SUM(amount_paise) FILTER (WHERE direction = 'debit'), 0),
-         COALESCE(SUM(amount_paise) FILTER (WHERE direction = 'credit'), 0)
+  SELECT COALESCE(SUM(amount_paise) FILTER (WHERE lower(direction) = 'debit'), 0),
+         COALESCE(SUM(amount_paise) FILTER (WHERE lower(direction) = 'credit'), 0)
     INTO debits, credits
     FROM ledger_entries WHERE transaction_id = NEW.transaction_id;
   IF debits <> credits THEN
