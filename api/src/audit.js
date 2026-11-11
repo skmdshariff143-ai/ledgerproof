@@ -63,7 +63,6 @@ export async function audit(db, { actor, action, target = null, ip = null, detai
 
 export async function verifyAuditChain(db) {
   let rows;
-  let hasStoredHashes = true;
   try {
     ({ rows } = await db.query(
       `SELECT id,
@@ -81,19 +80,14 @@ export async function verifyAuditChain(db) {
     ));
   } catch (err) {
     if (err.code !== "42703") throw err;
-    hasStoredHashes = false;
-    ({ rows } = await db.query(
-      `SELECT id,
-              id AS seq,
-              actor_user_id,
-              actor_role,
-              action,
-              target,
-              details::text AS details_text,
-              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at_iso
-         FROM audit_log
-        ORDER BY id ASC`,
-    ));
+    const legacy = await db.query("SELECT count(*)::int AS total FROM audit_log");
+    return {
+      verified: false,
+      schemaMigrated: false,
+      reason: "MISSING_HASH_COLUMNS",
+      totalEntries: legacy.rows[0].total,
+      headHash: null,
+    };
   }
 
   let expectedPrevious = GENESIS_HASH;
@@ -108,9 +102,10 @@ export async function verifyAuditChain(db) {
       metadata: row.details_text ?? "{}",
       createdAtIso: row.created_at_iso,
     });
-    if (hasStoredHashes && (row.previous_hash !== expectedPrevious || row.entry_hash !== expectedHash)) {
+    if (row.previous_hash !== expectedPrevious || row.entry_hash !== expectedHash) {
       return {
         verified: false,
+        schemaMigrated: true,
         totalEntries: rows.length,
         tamperedSeq: Number(row.seq ?? row.id),
         expectedHash,
@@ -118,11 +113,12 @@ export async function verifyAuditChain(db) {
         headHash: rows.at(-1)?.entry_hash ?? GENESIS_HASH,
       };
     }
-    expectedPrevious = hasStoredHashes ? row.entry_hash : expectedHash;
+    expectedPrevious = row.entry_hash;
   }
 
   return {
     verified: true,
+    schemaMigrated: true,
     totalEntries: rows.length,
     headHash: expectedPrevious,
   };

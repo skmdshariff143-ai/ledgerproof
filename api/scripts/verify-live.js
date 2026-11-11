@@ -1,6 +1,7 @@
 // End-to-end production & local verification suite (`npm run verify:live`).
-// Accepts LIVE_API_URL / API_URL and optional LIVE_WEB_URL. If LIVE_API_URL is omitted, boots an in-process
-// production-mode Express server against DATABASE_URL (migrating & seeding if empty) and runs all checks.
+// Separates RBAC, registration, onboarding, audit-chain, and reconciliation checks.
+// Never counts a legacy fallback or skipped assertion as a pass: each has its own status
+// (PASS, FAIL, PENDING_MIGRATION, SKIPPED) and exits non-zero unless all executed checks PASS.
 import pg from "pg";
 import { createApp } from "../src/create-app.js";
 import { poolConfig } from "../src/db-config.js";
@@ -61,39 +62,44 @@ async function call(method, path, { token, body, key } = {}) {
   return { status: res.status, headers: res.headers, body: parsed };
 }
 
-function record(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+function record(name, status, detail = "") {
+  results.push({ name, status, detail });
+  console.log(`${status.padEnd(18)} ${name}${detail ? `  (${detail})` : ""}`);
 }
 
 try {
   // 1. Health & Readiness probes
   const health = await call("GET", "/health");
-  record("GET /health -> 200 OK", health.status === 200 && health.body?.status === "ok");
+  record("GET /health -> 200 OK", health.status === 200 && health.body?.status === "ok" ? "PASS" : "FAIL");
 
   const ready = await call("GET", "/ready");
+  const rlBackend = ready.body?.rateLimiterBackend;
   record(
     "GET /ready -> 200 OK (database connected)",
-    ready.status === 200 && ready.body?.status === "healthy" && ready.body?.database === "connected",
+    ready.status === 200 && ready.body?.status === "healthy" && ready.body?.database === "connected" ? "PASS" : "FAIL",
+    rlBackend ? `rateLimiterBackend=${rlBackend}` : "",
   );
 
   // 2. System initialization state
   const sysStatus = await call("GET", "/api/system/status");
   record(
     "GET /api/system/status -> returns initialization state",
-    sysStatus.status === 200 && sysStatus.body?.initialized === true && sysStatus.body?.adminCount >= 1,
+    sysStatus.status === 200 && sysStatus.body?.initialized === true && sysStatus.body?.adminCount >= 1 ? "PASS" : "FAIL",
   );
 
   if (webUrl) {
     const webRes = await fetch(webUrl);
-    record(`GET ${webUrl} -> 200 OK`, webRes.status === 200);
+    record(`GET ${webUrl} -> 200 OK`, webRes.status === 200 ? "PASS" : "FAIL");
   }
 
   // 3. Admin & Holder logins
   const adminLogin = await call("POST", "/api/auth/login", {
     body: { email: DEMO.admin[0], password: DEMO.admin[1] },
   });
-  record("Admin login -> 200 OK with JWT", adminLogin.status === 200 && typeof adminLogin.body?.token === "string");
+  record(
+    "Admin login -> 200 OK with JWT",
+    adminLogin.status === 200 && typeof adminLogin.body?.token === "string" ? "PASS" : "FAIL",
+  );
   const adminToken = adminLogin.body?.token;
 
   const aliceLogin = await call("POST", "/api/auth/login", {
@@ -105,22 +111,30 @@ try {
   const aliceToken = aliceLogin.body?.token;
   const bobToken = bobLogin.body?.token;
 
-  // 4. Cryptographic SHA-256 audit hash-chain verification
+  // 4. Cryptographic SHA-256 audit hash-chain verification (reports PENDING_MIGRATION if columns missing)
   const verifyChain = await call("GET", "/api/admin/audit-logs/verify", { token: adminToken });
-  record(
-    "GET /api/admin/audit-logs/verify -> 200 OK with { verified: true }",
-    verifyChain.status === 200 && verifyChain.body?.verified === true && verifyChain.body?.totalEntries >= 1,
-    `entries=${verifyChain.body?.totalEntries}, head=${verifyChain.body?.headHash?.slice(0, 12)}...`,
-  );
+  if (verifyChain.status === 200 && verifyChain.body?.schemaMigrated === false) {
+    record(
+      "GET /api/admin/audit-logs/verify -> stored SHA-256 chain",
+      "PENDING_MIGRATION",
+      `reason=${verifyChain.body?.reason}, entries=${verifyChain.body?.totalEntries}`,
+    );
+  } else {
+    record(
+      "GET /api/admin/audit-logs/verify -> 200 OK with { verified: true }",
+      verifyChain.status === 200 && verifyChain.body?.verified === true && verifyChain.body?.totalEntries >= 1 ? "PASS" : "FAIL",
+      `entries=${verifyChain.body?.totalEntries}, head=${verifyChain.body?.headHash?.slice(0, 12)}...`,
+    );
+  }
 
-  // 5. Unauthorized ACCOUNT_HOLDER access to /api/admin/users -> 403 Forbidden
+  // 5. RBAC check (strictly separate from registration/onboarding)
   const forbiddenAdmin = await call("GET", "/api/admin/users", { token: aliceToken });
   record(
-    "Unauthorized ACCOUNT_HOLDER access to /api/admin/users -> 403 Forbidden",
-    forbiddenAdmin.status === 403,
+    "RBAC: ACCOUNT_HOLDER access to /api/admin/users -> 403 Forbidden",
+    forbiddenAdmin.status === 403 ? "PASS" : "FAIL",
   );
 
-  // 6. PENDING_KYC transfer attempt -> 403 Forbidden
+  // 6. Registration & 7. KYC Onboarding Gate (never substituted with an RBAC check)
   const aliceAcc = (await call("GET", "/api/accounts", { token: aliceToken })).body.accounts[0];
   const bobAcc = (await call("GET", "/api/accounts", { token: bobToken })).body.accounts[0];
 
@@ -129,26 +143,50 @@ try {
     body: { email: kycEmail, password: "KycVerify@123" },
   });
   if (regRes.status === 201) {
+    record(
+      "Registration: POST /api/auth/register creates PENDING_KYC user & 0-balance account",
+      regRes.body?.user?.status?.toUpperCase() === "PENDING_KYC" && regRes.body?.account?.balance_paise === "0" ? "PASS" : "FAIL",
+    );
     const kycTransfer = await call("POST", "/api/transactions/transfer", {
       token: regRes.body.token,
       body: { fromAccountId: regRes.body.account.id, toAccountId: aliceAcc.id, amountPaise: 100 },
       key: `kyc-block-${runId}`,
     });
     record(
-      "PENDING_KYC transfer attempt -> 403 Forbidden",
-      kycTransfer.status === 403 && kycTransfer.body?.error?.code === "KYC_PENDING",
+      "Onboarding Gate: PENDING_KYC transfer attempt -> 403 KYC_PENDING",
+      kycTransfer.status === 403 && kycTransfer.body?.error?.code === "KYC_PENDING" ? "PASS" : "FAIL",
+    );
+    const approveRes = await call("POST", `/api/admin/users/${regRes.body.user.id}/approve`, {
+      token: adminToken,
+    });
+    record(
+      "Onboarding Approval: POST /api/admin/users/:id/approve -> 200 OK (ACTIVE)",
+      approveRes.status === 200 &&
+        approveRes.body?.user?.status?.toUpperCase() === "ACTIVE" &&
+        approveRes.body?.account?.status?.toUpperCase() === "ACTIVE"
+        ? "PASS"
+        : "FAIL",
     );
   } else {
-    // Unmigrated remote DB without users.status column: verify holder cannot call admin approve endpoint
-    const fallbackBlock = await call("POST", `/api/admin/users/${aliceAcc.owner_id}/approve`, { token: aliceToken });
     record(
-      "PENDING_KYC / RBAC onboarding gate -> 403 Forbidden",
-      fallbackBlock.status === 403,
-      "remote DB pending column migration; RBAC gate verified",
+      "Registration: POST /api/auth/register creates PENDING_KYC user & 0-balance account",
+      "PENDING_MIGRATION",
+      `status=${regRes.status} (target database requires npm run db:migrate)`,
+    );
+    record(
+      "Onboarding Gate: PENDING_KYC transfer attempt -> 403 KYC_PENDING",
+      "SKIPPED",
+      "skipped because registration requires database migration",
+    );
+    record(
+      "Onboarding Approval: POST /api/admin/users/:id/approve -> 200 OK (ACTIVE)",
+      "SKIPPED",
+      "skipped because registration requires database migration",
     );
   }
 
-  // 7. Valid idempotent double-entry transfer + balance reconciliation
+  // 8. Valid idempotent double-entry transfer + balance reconciliation
+  const aliceBefore = BigInt(aliceAcc.balance_paise);
   const transferKey = `verify-transfer-${runId}`;
   const t1 = await call("POST", "/api/transactions/transfer", {
     token: aliceToken,
@@ -160,12 +198,24 @@ try {
     body: { fromAccountId: aliceAcc.id, toAccountNumber: bobAcc.account_number, amountPaise: 500 },
     key: transferKey,
   });
-  // Return the 500 paise so net balances remain unchanged
+  const aliceMid = BigInt((await call("GET", "/api/accounts", { token: aliceToken })).body.accounts[0].balance_paise);
   await call("POST", "/api/transactions/transfer", {
     token: bobToken,
     body: { fromAccountId: bobAcc.id, toAccountNumber: aliceAcc.account_number, amountPaise: 500 },
     key: `verify-return-${runId}`,
   });
+
+  record(
+    "Approved Holder Transfer & Idempotent Replay -> single debit & matching transactionId",
+    t1.status === 201 &&
+      t2.status === 201 &&
+      t1.body?.transactionId === t2.body?.transactionId &&
+      t2.headers.get("Idempotent-Replayed") === "true" &&
+      aliceBefore - aliceMid === 500n
+      ? "PASS"
+      : "FAIL",
+    `txId=${t1.body?.transactionId}`,
+  );
 
   const reconcile = await call("GET", "/api/ledger/reconcile", { token: adminToken });
   const isBalanced =
@@ -175,19 +225,49 @@ try {
     reconcile.body?.problems?.length === 0;
 
   record(
-    "Idempotent double-entry transfer + GET /api/ledger/reconcile -> 200 OK with SUM(debits) == SUM(credits)",
-    t1.status === 201 &&
-      t2.status === 201 &&
-      t1.body?.transactionId === t2.body?.transactionId &&
-      t2.headers.get("Idempotent-Replayed") === "true" &&
-      isBalanced,
+    "GET /api/ledger/reconcile -> 200 OK with balanced=true and SUM(debits) == SUM(credits)",
+    isBalanced ? "PASS" : "FAIL",
     `debits=${reconcile.body?.totals?.debits_paise}, credits=${reconcile.body?.totals?.credits_paise}`,
   );
+
+  // 9. Post-write stored audit hash check (verifies stored entry_hash on both historical and newly appended rows)
+  const auditList = await call("GET", "/api/admin/audit-logs?limit=200", { token: adminToken });
+  const logs = auditList.body?.entries ?? [];
+  const newestRow = logs[0];
+  const oldestRow = logs[logs.length - 1];
+  const verifyAfter = await call("GET", "/api/admin/audit-logs/verify", { token: adminToken });
+  if (verifyAfter.status === 200 && verifyAfter.body?.schemaMigrated === false) {
+    record(
+      "Stored Audit Hashes (historical + newly appended rows)",
+      "PENDING_MIGRATION",
+      `reason=${verifyAfter.body?.reason}`,
+    );
+  } else {
+    const hex64 = /^[0-9a-f]{64}$/;
+    const hasStoredHashes =
+      logs.length >= 2 &&
+      hex64.test(oldestRow?.entry_hash ?? "") &&
+      hex64.test(newestRow?.entry_hash ?? "") &&
+      oldestRow.id !== newestRow.id &&
+      verifyAfter.body?.verified === true;
+    record(
+      "Stored Audit Hashes: historical & newly appended rows carry verified SHA-256 entry_hash",
+      hasStoredHashes ? "PASS" : "FAIL",
+      `oldestId=${oldestRow?.id}, newestId=${newestRow?.id}, total=${verifyAfter.body?.totalEntries}`,
+    );
+  }
 } finally {
   if (localServer) await new Promise((resolve) => localServer.close(resolve));
   if (localPool) await localPool.end();
 }
 
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} live verification checks passed against ${baseUrl}`);
-process.exit(failed.length === 0 ? 0 : 1);
+const counts = {
+  PASS: results.filter((r) => r.status === "PASS").length,
+  FAIL: results.filter((r) => r.status === "FAIL").length,
+  PENDING_MIGRATION: results.filter((r) => r.status === "PENDING_MIGRATION").length,
+  SKIPPED: results.filter((r) => r.status === "SKIPPED").length,
+};
+console.log(
+  `\nSummary against ${baseUrl}: ${counts.PASS} PASS, ${counts.FAIL} FAIL, ${counts.PENDING_MIGRATION} PENDING_MIGRATION, ${counts.SKIPPED} SKIPPED`,
+);
+process.exit(counts.FAIL === 0 && counts.PENDING_MIGRATION === 0 ? 0 : 1);

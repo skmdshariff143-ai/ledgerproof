@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { accountOf, call, pool, tokenFor, useSeededServer } from "./helpers.js";
+import { migrate } from "../scripts/migrate.js";
+import { seed } from "../scripts/seed.js";
+import { audit, verifyAuditChain } from "../src/audit.js";
+import { accountOf, appPool, call, pool, resetDatabase, tokenFor, useSeededServer } from "./helpers.js";
 
 useSeededServer();
 
@@ -79,6 +82,28 @@ test("THREAT KYC onboarding gate: PENDING_KYC user attempting to send or receive
   });
   assert.equal(afterApprove.status, 201);
   assert.equal((await accountOf("newuser@ledgerline.com")).balance, 25_000);
+
+  // Admin rejects a second registered user -> user status becomes 'rejected', account becomes 'frozen'
+  const reg2 = await call("POST", "/api/auth/register", {
+    body: { email: "rejecteduser@ledgerline.com", password: "Rejected@123" },
+  });
+  assert.equal(reg2.status, 201);
+  const rejectRes = await call("POST", `/api/admin/users/${reg2.body.user.id}/reject`, { token: adminToken });
+  assert.equal(rejectRes.status, 200);
+  assert.equal(rejectRes.body.user.status.toLowerCase(), "rejected");
+  assert.equal(rejectRes.body.account.status.toLowerCase(), "frozen");
+
+  // Rejected user can still read /api/me to see their status, but cannot receive or send money (422 ACCOUNT_FROZEN)
+  const rejectedMe = await call("GET", "/api/me", { token: reg2.body.token });
+  assert.equal(rejectedMe.status, 200);
+  assert.equal(rejectedMe.body.user.status.toLowerCase(), "rejected");
+  const transferToRejected = await call("POST", "/api/transactions/transfer", {
+    token: aliceToken,
+    body: { fromAccountId: alice.id, toAccountId: reg2.body.account.id, amountPaise: 100 },
+    headers: { "Idempotency-Key": "kyc-recv-rejected" },
+  });
+  assert.equal(transferToRejected.status, 422);
+  assert.equal(transferToRejected.body.error.code, "ACCOUNT_FROZEN");
 });
 
 test("THREAT atomic overdraft rollback: transfer exceeding available balance fails with 422 and creates zero orphan rows in ledger_entries", async () => {
@@ -210,4 +235,153 @@ test("THREAT PgBouncer transaction pooler safety: audit chain hashing and transf
   // Confirm zero dangling session-level advisory locks exist after transaction completion
   const locks = await pool.query("SELECT count(*)::int AS c FROM pg_locks WHERE locktype = 'advisory' AND granted = true");
   assert.equal(locks.rows[0].c, 0, "zero dangling advisory locks after transaction commit");
+});
+
+test("THREAT legacy audit migration: upgrading a populated legacy schema backfills hashes, rejects inconsistent or ambiguous state, and keeps audit_log append-only", async () => {
+  try {
+    // 1. Fresh database migration
+    await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+    const freshResult = await migrate(pool);
+    assert.deepEqual(freshResult, { applied: true, upgraded: false });
+    const freshVerify = await verifyAuditChain(pool);
+    assert.equal(freshVerify.verified, true);
+    assert.equal(freshVerify.totalEntries, 0);
+
+    // 2. Populated legacy v1 schema (without previous_hash / entry_hash columns)
+    await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+    await pool.query(`
+      CREATE TABLE users (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        email text NOT NULL UNIQUE CHECK (email = lower(email)),
+        password_hash text NOT NULL,
+        role text NOT NULL CHECK (role IN ('admin', 'account_holder', 'auditor')),
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE SEQUENCE account_number_seq;
+      CREATE TABLE accounts (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_number text NOT NULL UNIQUE DEFAULT 'LP' || lpad(nextval('account_number_seq')::text, 10, '0'),
+        account_type text NOT NULL CHECK (account_type IN ('system_vault', 'user_checking')),
+        owner_id uuid REFERENCES users (id),
+        status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'frozen')),
+        balance_paise bigint NOT NULL DEFAULT 0,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      INSERT INTO accounts (account_number, account_type) VALUES ('VAULT-0001', 'system_vault');
+      CREATE TABLE transactions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        type text NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
+        initiated_by uuid NOT NULL REFERENCES users (id),
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE ledger_entries (
+        id bigserial PRIMARY KEY,
+        transaction_id uuid NOT NULL REFERENCES transactions (id),
+        account_id uuid NOT NULL REFERENCES accounts (id),
+        direction text NOT NULL CHECK (direction IN ('debit', 'credit')),
+        amount_paise bigint NOT NULL CHECK (amount_paise > 0),
+        running_balance_paise bigint NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE idempotency_keys (
+        user_id uuid NOT NULL REFERENCES users (id),
+        key text NOT NULL,
+        request_hash text NOT NULL,
+        transaction_id uuid NOT NULL REFERENCES transactions (id),
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, key)
+      );
+      CREATE TABLE audit_log (
+        id bigserial PRIMARY KEY,
+        actor_user_id uuid REFERENCES users (id),
+        actor_role text,
+        action text NOT NULL,
+        target text,
+        ip text,
+        details jsonb,
+        outcome text NOT NULL CHECK (outcome IN ('success', 'denied', 'error')),
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+    `);
+
+    const legacyAdmin = (
+      await pool.query("INSERT INTO users (email, password_hash, role) VALUES ('admin@ledgerline.com', 'hash', 'admin') RETURNING id")
+    ).rows[0];
+    await pool.query(
+      `INSERT INTO audit_log (actor_user_id, actor_role, action, target, ip, details, outcome, created_at)
+       VALUES ($1, 'admin', 'login', NULL, '127.0.0.1', '{"step": 1}'::jsonb, 'success', '2026-11-09T10:00:00.000Z'),
+              (NULL, NULL, 'login', NULL, '127.0.0.1', '{"email": "bad@example.com"}'::jsonb, 'denied', '2026-11-09T10:01:00.000Z'),
+              ($1, 'admin', 'reconcile', 'account:vault', '127.0.0.1', NULL, 'success', '2026-11-09T10:02:00.000Z')`,
+      [legacyAdmin.id],
+    );
+
+    const beforeRows = (await pool.query("SELECT id, actor_user_id, actor_role, action, target, details, outcome, created_at FROM audit_log ORDER BY id ASC")).rows;
+
+    // Before migration, verifyAuditChain reports schemaMigrated: false
+    const preMigrateVerify = await verifyAuditChain(pool);
+    assert.equal(preMigrateVerify.verified, false);
+    assert.equal(preMigrateVerify.schemaMigrated, false);
+    assert.equal(preMigrateVerify.reason, "MISSING_HASH_COLUMNS");
+
+    // 3. Upgrade the populated legacy database
+    const upgradeResult = await migrate(pool);
+    assert.deepEqual(upgradeResult, { applied: false, upgraded: true });
+
+    // Original audit content is preserved byte-for-byte
+    const afterRows = (await pool.query("SELECT id, actor_user_id, actor_role, action, target, details, outcome, created_at FROM audit_log ORDER BY id ASC")).rows;
+    assert.deepEqual(afterRows, beforeRows);
+
+    // Every legacy row now has a verified SHA-256 chain from GENESIS_LEDGERPROOF_2026
+    const postMigrateVerify = await verifyAuditChain(pool);
+    assert.equal(postMigrateVerify.verified, true);
+    assert.equal(postMigrateVerify.schemaMigrated, true);
+    assert.equal(postMigrateVerify.totalEntries, 3);
+
+    // 4. Repeat migration is idempotent and preserves existing hashes
+    const hashesBeforeRepeat = (await pool.query("SELECT id, previous_hash, entry_hash FROM audit_log ORDER BY id ASC")).rows;
+    const repeatResult = await migrate(pool);
+    assert.deepEqual(repeatResult, { applied: false, upgraded: true });
+    const hashesAfterRepeat = (await pool.query("SELECT id, previous_hash, entry_hash FROM audit_log ORDER BY id ASC")).rows;
+    assert.deepEqual(hashesAfterRepeat, hashesBeforeRepeat);
+
+    // 5. Appending a new audit row links cleanly to the migrated tip, and restricted role cannot mutate audit_log
+    await audit(appPool, { actor: { id: legacyAdmin.id, role: "admin" }, action: "read_users", ip: "127.0.0.1", outcome: "success" });
+    const afterAppendVerify = await verifyAuditChain(appPool);
+    assert.equal(afterAppendVerify.verified, true);
+    assert.equal(afterAppendVerify.totalEntries, 4);
+    await assert.rejects(appPool.query("UPDATE audit_log SET action = 'tampered'"), /permission denied/);
+    await assert.rejects(appPool.query("DELETE FROM audit_log"), /permission denied/);
+
+    // 6. Inconsistent existing hash fails migration visibly and restores append-only trigger
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only");
+      await client.query("UPDATE audit_log SET entry_hash = '0000000000000000000000000000000000000000000000000000000000000000' WHERE id = 2");
+      await client.query("ALTER TABLE audit_log ENABLE TRIGGER audit_log_append_only");
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    await assert.rejects(migrate(pool), /inconsistent existing audit_log hash at id 2/);
+    // Append-only trigger is still active after the failed migration rolled back
+    await assert.rejects(pool.query("DELETE FROM audit_log WHERE id = 1"), /append-only/);
+
+    // 7. Ambiguous partial state (NULL entry_hash on an earlier row before a hashed row) fails visibly
+    const client2 = await pool.connect();
+    try {
+      await client2.query("BEGIN");
+      await client2.query("ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only");
+      await client2.query("ALTER TABLE audit_log ALTER COLUMN entry_hash DROP NOT NULL");
+      await client2.query("UPDATE audit_log SET entry_hash = NULL WHERE id = 1");
+      await client2.query("ALTER TABLE audit_log ENABLE TRIGGER audit_log_append_only");
+      await client2.query("COMMIT");
+    } finally {
+      client2.release();
+    }
+    await assert.rejects(migrate(pool), /ambiguous audit_log migration state: unhashed legacy row precedes hashed row at id 2/);
+  } finally {
+    await resetDatabase(pool);
+    await seed(pool);
+  }
 });
