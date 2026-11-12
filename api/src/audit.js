@@ -102,14 +102,14 @@ export async function verifyAuditChain(db) {
       metadata: row.details_text ?? "{}",
       createdAtIso: row.created_at_iso,
     });
-    if (row.previous_hash !== expectedPrevious || row.entry_hash !== expectedHash) {
+    if (!row.entry_hash || row.previous_hash !== expectedPrevious || row.entry_hash !== expectedHash) {
       return {
         verified: false,
         schemaMigrated: true,
         totalEntries: rows.length,
         tamperedSeq: Number(row.seq ?? row.id),
         expectedHash,
-        actualHash: row.entry_hash,
+        actualHash: row.entry_hash ?? null,
         headHash: rows.at(-1)?.entry_hash ?? GENESIS_HASH,
       };
     }
