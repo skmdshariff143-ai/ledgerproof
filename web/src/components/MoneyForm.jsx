@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { shortId } from "../format.js";
 import { useSession } from "../session.jsx";
 
@@ -8,6 +8,7 @@ import { useSession } from "../session.jsx";
 // `buildRequest(values)` returns { path, body } or throws an Error whose message is shown.
 export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
   const { call } = useSession();
+  const errorId = useId();
   const blank = Object.fromEntries(fields.map((f) => [f.name, ""]));
   const [values, setValues] = useState(blank);
   const [simulateDuplicate, setSimulateDuplicate] = useState(false);
@@ -56,7 +57,12 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
         <label key={f.name}>
           {f.label}
           {f.options ? (
-            <select value={values[f.name]} onChange={(e) => setValues({ ...values, [f.name]: e.target.value })} required>
+            <select
+              value={values[f.name]}
+              onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
+              aria-describedby={formError ? errorId : undefined}
+              required
+            >
               <option value="">Choose…</option>
               {f.options.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -70,13 +76,15 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
               inputMode={f.inputMode}
               autoComplete="off"
               spellCheck={false}
+              aria-describedby={formError ? errorId : undefined}
+              aria-invalid={formError ? true : undefined}
               required
             />
           )}
         </label>
       ))}
-      <div className="retry-sim">
-        <p className="retry-sim-title">Idempotency Retry Simulator</p>
+      <details className="retry-sim">
+        <summary>Idempotency retry simulator (for evaluators){simulateDuplicate ? ": on" : ""}</summary>
         <label className="switch">
           <input
             type="checkbox"
@@ -91,18 +99,27 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
         </label>
         <p className="muted small">When on, the same request is sent twice with one Idempotency-Key, and the server must pay once.</p>
         <p className="muted small key-line">Idempotency-Key for this request: <code className="ref">{idempotencyKey}</code></p>
-      </div>
+      </details>
       <button type="submit" disabled={busy}>{busy ? "Sending…" : submitLabel}</button>
-      {formError && <p className="error" role="alert">{formError}</p>}
-      <div role="status" aria-live="polite">
+      {formError && <p id={errorId} className="error" role="alert"><strong>Check the form.</strong> {formError}</p>}
+      <div aria-live="polite">
         {outcome && (
           <ul className="attempts">
             {outcome.attempts.map((a, i) => (
-              <li key={i} className={a.ok ? "attempt-ok" : "attempt-bad"}>
+              <li key={i} className={a.ok ? "attempt-ok" : "attempt-bad"} role={a.ok ? undefined : "alert"}>
                 {outcome.attempts.length > 1 && <strong>Request {i + 1}: </strong>}
-                {a.ok
-                  ? `${a.status}: transaction ${shortId(a.transactionId)} ${a.replayed ? "(replayed: answered from the first request, no second payment)" : "(new)"}`
-                  : `${a.status || "no response"} ${a.code ?? ""}: ${a.message}`}
+                {a.ok ? (
+                  <>
+                    <strong>{a.replayed ? "Replayed." : "Success."}</strong>{" "}
+                    {a.replayed
+                      ? `Transaction ${shortId(a.transactionId)} was already recorded, so no second payment was made (${a.status}).`
+                      : `Transaction ${shortId(a.transactionId)} recorded (${a.status}).`}
+                  </>
+                ) : (
+                  <>
+                    <strong>Failed.</strong> {a.message} ({a.status || "no response"} {a.code ?? ""})
+                  </>
+                )}
               </li>
             ))}
             {sameTransaction && (

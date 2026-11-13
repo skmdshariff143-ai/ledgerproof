@@ -10,6 +10,13 @@ import { useLoad } from "../hooks.js";
 import { formatRupees, parseRupeesToPaise } from "../money.js";
 import { useSession } from "../session.jsx";
 
+// What each onboarding action does on the server, shown in the confirm dialog before it runs.
+const ONBOARD_EFFECT = {
+  approve: "Their status becomes active and their account becomes active, so they can send and receive money. An account is created if they have none.",
+  reject: "Their status becomes rejected and their account is frozen.",
+  freeze: "Their status and their account become frozen. No money can move in or out until you approve them again.",
+};
+
 export function AdminView() {
   const { call } = useSession();
   const accounts = useLoad("/api/accounts");
@@ -30,6 +37,10 @@ export function AdminView() {
   }
 
   const setFrozen = (account, freeze) => {
+    const effect = freeze
+      ? "No money can move in or out of it until you unfreeze it."
+      : "It becomes active and money can move in and out again.";
+    if (!window.confirm(`${freeze ? "Freeze" : "Unfreeze"} account ${account.account_number}?\n\n${effect}`)) return undefined;
     setBusyId(account.id);
     return act(freeze ? "Freeze" : "Unfreeze", async () => {
       await call("POST", `/api/accounts/${account.id}/${freeze ? "freeze" : "unfreeze"}`);
@@ -38,10 +49,13 @@ export function AdminView() {
   };
 
   const onboardAction = (user, action) => {
+    const question = `${action[0].toUpperCase()}${action.slice(1)} ${user.email}?`;
+    const current = `They are currently ${(user.status ?? "active").replace(/_/g, " ")}.`;
+    if (!window.confirm(`${question}\n\n${current} ${ONBOARD_EFFECT[action]}`)) return undefined;
     setBusyId(user.id);
     return act(action, async () => {
       await call("POST", `/api/admin/users/${user.id}/${action}`);
-      return `${user.email} (${action}) completed.`;
+      return `${user.email}: ${action} completed.`;
     }).finally(() => setBusyId(null));
   };
 
@@ -54,6 +68,30 @@ export function AdminView() {
     });
   };
 
+  const userActions = (u) => {
+    const status = u.status?.toLowerCase();
+    if (u.role !== "account_holder") return <span className="muted small">None</span>;
+    return (
+      <div className="filters">
+        {status !== "active" && (
+          <button type="button" disabled={busyId === u.id} onClick={() => onboardAction(u, "approve")}>
+            Approve KYC
+          </button>
+        )}
+        {status === "pending_kyc" && (
+          <button type="button" className="secondary" disabled={busyId === u.id} onClick={() => onboardAction(u, "reject")}>
+            Reject
+          </button>
+        )}
+        {status === "active" && (
+          <button type="button" className="secondary" disabled={busyId === u.id} onClick={() => onboardAction(u, "freeze")}>
+            Freeze user
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <Loaded state={accounts}>
       {({ accounts: list }) => (
@@ -63,10 +101,35 @@ export function AdminView() {
             const userAccounts = list.filter((a) => a.account_type === "user_checking");
             const emailOf = Object.fromEntries(userList.map((u) => [u.id, u.email]));
             const holders = userList.filter((u) => u.role === "account_holder");
+            const pending = holders.filter((u) => u.status?.toLowerCase() === "pending_kyc");
             return (
               <>
+                {message && (
+                  <div className={`toast ${message.ok ? "toast-ok" : "toast-bad"}`} role={message.ok ? "status" : "alert"}>
+                    <p>
+                      <strong>{message.ok ? "Done." : "Failed."}</strong> {message.text}
+                    </p>
+                    <button type="button" className="secondary" onClick={() => setMessage(null)}>Dismiss</button>
+                  </div>
+                )}
+
+                <Section title={`Pending KYC review (${pending.length})`}>
+                  <DataTable
+                    label="Accounts awaiting KYC review"
+                    stack
+                    rows={pending}
+                    rowKey={(u) => u.id}
+                    empty="No accounts are waiting for KYC review."
+                    columns={[
+                      { label: "Email", render: (u) => u.email },
+                      { label: "Registered", render: (u) => formatTime(u.created_at) },
+                      { label: "Id", render: (u) => <code className="ref" title={u.id}>{shortId(u.id)}</code> },
+                      { label: "Review", render: userActions },
+                    ]}
+                  />
+                </Section>
+
                 <ReconcileBanner />
-                {message && <p className={message.ok ? "notice" : "error"} role="status">{message.text}</p>}
 
                 <div className="two-col">
                   <Section title="System vault">
@@ -74,7 +137,7 @@ export function AdminView() {
                     <p className="balance money">{formatRupees(vault.balance_paise)}</p>
                     <p><code>{vault.account_number}</code> <Badge value={vault.status} /></p>
                   </Section>
-                  <Section title="Deposit (Initial / Test Fund Tool)">
+                  <Section title="Deposit (initial / test fund tool)">
                     <MoneyForm
                       submitLabel="Deposit"
                       fields={[
@@ -97,6 +160,8 @@ export function AdminView() {
 
                 <Section title="Accounts">
                   <DataTable
+                    label="Customer accounts"
+                    stack
                     rows={userAccounts}
                     rowKey={(a) => a.id}
                     columns={[
@@ -108,7 +173,7 @@ export function AdminView() {
                         label: "Action",
                         render: (a) => (
                           <button type="button" className="secondary" disabled={busyId === a.id} onClick={() => setFrozen(a, a.status?.toLowerCase() === "active")}>
-                            {a.status?.toLowerCase() === "active" ? "Freeze" : "Unfreeze"}
+                            {a.status?.toLowerCase() === "active" ? "Freeze account" : "Unfreeze account"}
                           </button>
                         ),
                       },
@@ -128,8 +193,10 @@ export function AdminView() {
                   </form>
                 </Section>
 
-                <Section title="Users & KYC Onboarding">
+                <Section title="Users and KYC onboarding">
                   <DataTable
+                    label="All users"
+                    stack
                     rows={userList}
                     rowKey={(u) => u.id}
                     columns={[
@@ -138,31 +205,7 @@ export function AdminView() {
                       { label: "Status", render: (u) => <Badge value={u.status ?? "active"} /> },
                       { label: "Id", render: (u) => <code className="ref" title={u.id}>{shortId(u.id)}</code> },
                       { label: "Created", render: (u) => formatTime(u.created_at) },
-                      {
-                        label: "Onboarding",
-                        render: (u) =>
-                          u.role === "account_holder" ? (
-                            <div className="filters">
-                              {u.status?.toLowerCase() !== "active" && (
-                                <button type="button" disabled={busyId === u.id} onClick={() => onboardAction(u, "approve")}>
-                                  Approve KYC
-                                </button>
-                              )}
-                              {u.status?.toLowerCase() === "pending_kyc" && (
-                                <button type="button" className="secondary" disabled={busyId === u.id} onClick={() => onboardAction(u, "reject")}>
-                                  Reject
-                                </button>
-                              )}
-                              {u.status?.toLowerCase() === "active" && (
-                                <button type="button" className="secondary" disabled={busyId === u.id} onClick={() => onboardAction(u, "freeze")}>
-                                  Freeze User
-                                </button>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="muted small">—</span>
-                          ),
-                      },
+                      { label: "Onboarding", render: userActions },
                     ]}
                   />
                 </Section>
