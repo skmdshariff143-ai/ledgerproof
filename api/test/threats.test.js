@@ -18,7 +18,7 @@ const titles = readdirSync(testDir)
 // Each table row names its proving tests as `backticked` spans in the last cell.
 // "..." inside a span stands for words left out; every part must appear in one title.
 const rows = threatsDoc
-  .split("\n")
+  .split(/\r?\n/) // a Windows checkout (core.autocrlf) gives THREATS.md CRLF line endings
   .filter((line) => line.startsWith("|") && !/^\|[-| ]+\|$/.test(line) && !line.startsWith("| Threat |"))
   .map((line) => {
     const cells = line.split("|");
