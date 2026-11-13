@@ -39,8 +39,9 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
   app.set("trust proxy", trustProxy);
   app.use(cors({ origin: allowedOrigins, exposedHeaders: ["Idempotent-Replayed"] }));
   // `ready` rejects when startup checks fail (see role-check.js); every request then fails closed with a 500.
+  // /ready answers for itself, so a failed startup check still gets its stable 503 shape.
   app.use(async (req, res, next) => {
-    await ready;
+    if (req.path !== "/ready") await ready;
     next();
   });
   app.use(express.json({ limit: "10kb" }));
@@ -68,13 +69,19 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
   });
 
   app.get("/ready", async (req, res) => {
+    let database = "startup_check_failed";
     try {
+      await ready;
+      database = "unreachable";
       await pool.query("SELECT 1");
+      database = "connected";
       const rl = await checkRateLimiterHealth(pool);
-      const ready = rl.status === "ready";
-      res.status(ready ? 200 : 503).json({ status: ready ? "healthy" : "degraded", database: "connected", rateLimiter: rl.status, rateLimiterBackend: rl.backend });
+      const healthy = rl.status === "ready";
+      res.status(healthy ? 200 : 503).json({ status: healthy ? "healthy" : "degraded", database, rateLimiter: rl.status, rateLimiterBackend: rl.backend });
     } catch (err) {
-      res.status(503).json({ status: "degraded", database: "unreachable", error: err.message });
+      // Driver messages can name the host, port and role, so only the error code is logged and nothing is returned.
+      console.error("readiness check failed", { database, code: err.code ?? "UNKNOWN" });
+      res.status(503).json({ status: "degraded", database, rateLimiter: "unknown", rateLimiterBackend: "unknown" });
     }
   });
 
