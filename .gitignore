@@ -8,3 +8,6 @@ dist/
 .claude/proven-config.json
 .claude/.proven-config-version
 .claude/settings.local.json
+
+# Local browser QA artifacts
+.playwright-mcp/
