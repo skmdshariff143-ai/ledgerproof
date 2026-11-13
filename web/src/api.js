@@ -1,4 +1,6 @@
-const API_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:3000").replace(/\/$/, "");
+// Set at build time by vite.config.js (see apiUrl.js); "" means this build has no API it may call.
+const API_URL = __API_URL__;
+export const API_DISABLED = API_URL === "";
 
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -11,6 +13,9 @@ export class ApiError extends Error {
 // Every API answer is JSON; failures look like { error: { code, message } }.
 // `replayed` is true when the server answered from an earlier request with the same Idempotency-Key.
 export async function request(method, path, { token, body, idempotencyKey } = {}) {
+  if (API_DISABLED) {
+    throw new ApiError(0, "PREVIEW_API_DISABLED", "This preview has no isolated API, so sign-in and money actions are turned off.");
+  }
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";

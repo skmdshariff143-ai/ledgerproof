@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { request } from "../api.js";
+import { API_DISABLED, request } from "../api.js";
 import { DEMO_LOGINS } from "../demoLogins.js";
 import { useSession } from "../session.jsx";
 
@@ -72,6 +72,12 @@ export function Login() {
     <main className="login">
       <h1>LedgerProof</h1>
       <p className="muted">Money movement with a ledger you can prove.</p>
+
+      {API_DISABLED && (
+        <section className="banner banner-bad" role="status">
+          <p className="small">Preview build: no isolated API is configured, so sign-in, registration and money actions are turned off. This preview never calls the production API.</p>
+        </section>
+      )}
 
       {!initialized && (
         <section className="banner banner-bad" aria-live="polite">
