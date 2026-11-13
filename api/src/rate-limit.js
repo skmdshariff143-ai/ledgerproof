@@ -63,7 +63,7 @@ export async function checkRateLimiterHealth(pool) {
     return { status: "ready", backend: "postgres" };
   } catch (err) {
     if (err.code === "42P01" || err.code === "42501") {
-      return { status: "ready", backend: "memory_fallback" };
+      return { status: "degraded", backend: "memory_fallback" };
     }
     throw err;
   }

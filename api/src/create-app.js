@@ -71,7 +71,8 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
     try {
       await pool.query("SELECT 1");
       const rl = await checkRateLimiterHealth(pool);
-      res.status(200).json({ status: "healthy", database: "connected", rateLimiter: rl.status, rateLimiterBackend: rl.backend });
+      const ready = rl.status === "ready";
+      res.status(ready ? 200 : 503).json({ status: ready ? "healthy" : "degraded", database: "connected", rateLimiter: rl.status, rateLimiterBackend: rl.backend });
     } catch (err) {
       res.status(503).json({ status: "degraded", database: "unreachable", error: err.message });
     }

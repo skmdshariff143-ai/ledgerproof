@@ -26,20 +26,16 @@ function isJtiCachedRevoked(jti) {
 export async function isTokenRevoked(pool, jti) {
   if (!jti) return false;
   if (isJtiCachedRevoked(jti)) return true;
-  try {
-    const { rows } = await pool.query(
-      "SELECT expires_at FROM revoked_tokens WHERE jti = $1 AND expires_at > now()",
-      [jti],
-    );
-    if (rows.length > 0) {
-      revokedJtiCache.set(jti, new Date(rows[0].expires_at).getTime());
-      return true;
-    }
-    return false;
-  } catch (err) {
-    if (err.code === "42P01" || err.code === "42501") return false;
-    throw err;
+  // Fail closed: query errors propagate, because a missing or unreadable revoked_tokens cannot prove the token is still valid.
+  const { rows } = await pool.query(
+    "SELECT expires_at FROM revoked_tokens WHERE jti = $1 AND expires_at > now()",
+    [jti],
+  );
+  if (rows.length > 0) {
+    revokedJtiCache.set(jti, new Date(rows[0].expires_at).getTime());
+    return true;
   }
+  return false;
 }
 
 export async function revokeToken(pool, decodedToken) {
@@ -50,17 +46,14 @@ export async function revokeToken(pool, decodedToken) {
     : Math.floor(Date.now() / 1000) + 3600;
   const expiresAt = new Date(expSeconds * 1000);
   revokedJtiCache.set(jti, expiresAt.getTime());
-  try {
-    await pool.query("DELETE FROM revoked_tokens WHERE expires_at <= now()");
-    await pool.query(
-      `INSERT INTO revoked_tokens (jti, user_id, expires_at)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (jti) DO NOTHING`,
-      [jti, isUuid(decodedToken.sub) ? decodedToken.sub : null, expiresAt.toISOString()],
-    );
-  } catch (err) {
-    if (err.code !== "42P01" && err.code !== "42501") throw err;
-  }
+  // Errors propagate: a logout that only reached this instance's cache must not report success.
+  await pool.query("DELETE FROM revoked_tokens WHERE expires_at <= now()");
+  await pool.query(
+    `INSERT INTO revoked_tokens (jti, user_id, expires_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (jti) DO NOTHING`,
+    [jti, isUuid(decodedToken.sub) ? decodedToken.sub : null, expiresAt.toISOString()],
+  );
   return true;
 }
 
