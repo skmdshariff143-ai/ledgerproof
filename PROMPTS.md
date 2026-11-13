@@ -182,7 +182,7 @@ How AI (Claude Code) was used on this project, and where its output was wrong. E
 
 - **Asked:** Harden the public readiness answer, keep Vercel previews away from production data, and correct the README's live token-revocation claim.
 - **What the AI had produced:**
-  1. `GET /ready` in `api/src/create-app.js` returned `error: err.message` on failure, and my first fix (`2ba4d65` before review) still let a failed startup role check fall through to a generic `500`.
+  1. `GET /ready` in `api/src/create-app.js` returned `error: err.message` on failure, and my first uncommitted draft still let a failed startup role check fall through to a generic `500`.
   2. `web/src/api.js` read `VITE_API_URL`, which the Vercel web project also sets for previews, so every preview build called the production API. My first fix fell back to the production URL whenever `VERCEL_ENV` was missing, and offered a `VITE_PREVIEW_API_URL` that the web CSP (`connect-src`) would have blocked anyway.
   3. README listed cross-instance token revocation under "Built and verified" while production had no `revoked_tokens` table.
 - **What was wrong:** A database error message can contain the host, port and role. A preview's requests reached production; CORS decides only what the browser may read, not whether the request arrives. The `security-reviewer` agent flagged the `VERCEL_ENV` fail-open, the CSP mismatch and the `500` path; while fixing the last one, a `const ready` in the handler shadowed the startup `ready` promise and broke four tests until it was renamed.
