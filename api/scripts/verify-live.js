@@ -256,6 +256,19 @@ try {
       `oldestId=${oldestRow?.id}, newestId=${newestRow?.id}, total=${verifyAfter.body?.totalEntries}`,
     );
   }
+
+  // 10. Logout revocation on a fresh session. A single request may reach the same instance, so the
+  // cross-instance proof is the revoked_tokens row, which the operator checks in the database.
+  const session = await call("POST", "/api/auth/login", {
+    body: { email: DEMO.admin[0], password: DEMO.admin[1] },
+  });
+  const logout = await call("POST", "/api/auth/logout", { token: session.body?.token });
+  const reuse = await call("GET", "/api/accounts", { token: session.body?.token });
+  record(
+    "Logout revocation: POST /api/auth/logout -> 200, then the same token -> 401",
+    session.status === 200 && logout.status === 200 && reuse.status === 401 ? "PASS" : "FAIL",
+    `logout=${logout.status}, reuse=${reuse.status}`,
+  );
 } finally {
   if (localServer) await new Promise((resolve) => localServer.close(resolve));
   if (localPool) await localPool.end();
