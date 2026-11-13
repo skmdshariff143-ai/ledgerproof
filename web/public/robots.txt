@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ledgerproof-web.vercel.app/sitemap.xml
