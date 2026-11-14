@@ -171,11 +171,14 @@ export function AdminView() {
                       { label: "Balance", align: "num", render: (a) => formatRupees(a.balance_paise) },
                       {
                         label: "Action",
-                        render: (a) => (
-                          <button type="button" className="secondary" disabled={busyId === a.id} onClick={() => setFrozen(a, a.status?.toLowerCase() === "active")}>
-                            {a.status?.toLowerCase() === "active" ? "Freeze account" : "Unfreeze account"}
-                          </button>
-                        ),
+                        render: (a) =>
+                          a.status?.toLowerCase() === "pending_kyc" ? (
+                            <span className="muted small">Review in the KYC list</span>
+                          ) : (
+                            <button type="button" className="secondary" disabled={busyId === a.id} onClick={() => setFrozen(a, a.status?.toLowerCase() === "active")}>
+                              {a.status?.toLowerCase() === "active" ? "Freeze account" : "Unfreeze account"}
+                            </button>
+                          ),
                       },
                     ]}
                   />

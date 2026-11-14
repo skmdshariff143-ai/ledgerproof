@@ -304,12 +304,22 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
       const account = await audited(req, action, target, () => {
         requireUuid(req.params.id, "account id");
         return inTransaction(pool, async (client) => {
-          // Only user accounts: freezing the vault would stop every deposit.
+          // Only user accounts: freezing the vault would stop every deposit. A pending-KYC account changes only
+          // through approve or reject, and an account is made active again only while its owner is active, so
+          // freeze and unfreeze cannot be used to get round onboarding.
           const { rows } = await client.query(
-            `UPDATE accounts SET status = $2 WHERE id = $1 AND account_type = 'user_checking' RETURNING ${ACCOUNT_COLUMNS}`,
+            `UPDATE accounts SET status = $2
+              WHERE id = $1 AND account_type = 'user_checking' AND lower(status) <> 'pending_kyc'
+                AND ($2 <> 'active' OR owner_id IN (SELECT id FROM users WHERE lower(status) = 'active'))
+              RETURNING ${ACCOUNT_COLUMNS}`,
             [req.params.id, status],
           );
-          if (rows.length === 0) throw fail("ACCOUNT_NOT_FOUND", "user account not found");
+          if (rows.length === 0) {
+            const current = await client.query("SELECT status FROM accounts WHERE id = $1 AND account_type = 'user_checking'", [req.params.id]);
+            if (!current.rows[0]) throw fail("ACCOUNT_NOT_FOUND", "user account not found");
+            if (current.rows[0].status.toLowerCase() === "pending_kyc") throw fail("KYC_PENDING", "account is waiting for KYC approval: approve or reject the user instead");
+            throw fail("ACCOUNT_FROZEN", "the account's owner is not active: use the user's onboarding actions instead");
+          }
           await audit(client, { actor: req.user, action, target, ip: req.ip, outcome: "success" });
           return rows[0];
         });
