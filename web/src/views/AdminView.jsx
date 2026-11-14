@@ -146,7 +146,7 @@ export function AdminView() {
                           label: "Account",
                           options: userAccounts.map((a) => ({ value: a.id, label: `${a.account_number} · ${emailOf[a.owner_id]}` })),
                         },
-                        { name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" },
+                        { name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal", maxLength: 16 },
                       ]}
                       buildRequest={(v) => {
                         const paise = parseRupeesToPaise(v.amount);
