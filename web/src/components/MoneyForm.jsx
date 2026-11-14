@@ -79,7 +79,7 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
               value={values[f.name]}
               onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
               placeholder={f.placeholder}
-              inputMode={f.inputMode}
+              inputMode={f.inputMode} maxLength={f.maxLength}
               autoComplete="off"
               spellCheck={false}
               aria-describedby={formError ? errorId : undefined}

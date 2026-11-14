@@ -70,8 +70,8 @@ export function HolderView() {
                 <MoneyForm
                   submitLabel="Send transfer"
                   fields={[
-                    { name: "to", label: "Recipient account number", placeholder: "LP0000000002" },
-                    { name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" },
+                    { name: "to", label: "Recipient account number", placeholder: "LP0000000002", maxLength: 32 },
+                    { name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal", maxLength: 16 },
                   ]}
                   buildRequest={(v) => ({
                     path: "/api/transactions/transfer",
@@ -83,7 +83,7 @@ export function HolderView() {
               <Section title="Withdraw">
                 <MoneyForm
                   submitLabel="Withdraw"
-                  fields={[{ name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" }]}
+                  fields={[{ name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal", maxLength: 16 }]}
                   buildRequest={(v) => ({ path: "/api/transactions/withdraw", body: { fromAccountId: account.id, amountPaise: amountPaise(v.amount) } })}
                   onDone={refresh}
                 />

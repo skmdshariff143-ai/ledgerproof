@@ -199,7 +199,9 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
   function moneyRoute(path, roles, action, targetAccountOf, work) {
     route("post", path, roles, async (req, res) => {
       const body = req.body ?? {};
-      const target = `account:${targetAccountOf(body)}`;
+      // Only a valid id is written to the append-only audit log; anything else could be thousands of characters.
+      const accountId = targetAccountOf(body);
+      const target = `account:${isUuid(accountId) ? accountId : "invalid"}`;
       const result = await audited(req, action, target, () => work(req, body));
       if (result.replayed) {
         // The payment already committed; a failing audit write must not turn that into a 500.
@@ -413,7 +415,7 @@ export function createApp(pool, { jwtSecret, allowedOrigins = [], trustProxy = f
   async function listAuditLogs(req, res) {
     const { action, outcome, actorRole, limit = "200", offset = "0" } = req.query ?? {};
     const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 500);
-    const parsedOffset = Math.max(Number.parseInt(offset, 10) || 0, 0);
+    const parsedOffset = Math.min(Math.max(Number.parseInt(offset, 10) || 0, 0), 1_000_000_000); // beyond bigint the database would answer 500
     const conditions = [];
     const params = [];
     if (typeof action === "string" && action.trim()) {

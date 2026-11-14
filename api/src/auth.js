@@ -5,6 +5,9 @@ import { fail, isUuid } from "./errors.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
 const TOKEN_LIFETIME = "1h";
+// Limits on text a caller sends: 254 is the longest valid email address, and a longer password buys nothing.
+const MAX_EMAIL_LENGTH = 254;
+const MAX_PASSWORD_LENGTH = 128;
 // Unknown emails are checked against this hash so they take as long as a wrong password.
 const DUMMY_HASH = await hashPassword(randomBytes(16).toString("hex"));
 
@@ -61,6 +64,10 @@ export async function revokeToken(pool, decodedToken) {
 export async function login(pool, secret, { email, password }, ip) {
   if (typeof email !== "string" || typeof password !== "string") {
     throw fail("INVALID_INPUT", "email and password are required");
+  }
+  // Refused before any lookup or audit row, so an oversized value is never stored.
+  if (email.length > MAX_EMAIL_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+    throw fail("INVALID_INPUT", `email is at most ${MAX_EMAIL_LENGTH} characters and password at most ${MAX_PASSWORD_LENGTH}`);
   }
   const { rows } = await pool.query("SELECT id, role, password_hash FROM users WHERE email = $1", [email.toLowerCase()]);
   const user = rows[0];
@@ -136,11 +143,11 @@ export function allowRoles(pool, roles) {
 // Registers a new account_holder in PENDING_KYC status with a 0-balance PENDING_KYC account.
 // Never trusts role or status claims from the request body.
 export async function registerUser(pool, secret, { email, password }, ip) {
-  if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    throw fail("INVALID_INPUT", "a valid email is required");
+  if (typeof email !== "string" || email.trim().length > MAX_EMAIL_LENGTH || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    throw fail("INVALID_INPUT", `a valid email of at most ${MAX_EMAIL_LENGTH} characters is required`);
   }
-  if (typeof password !== "string" || password.length < 8) {
-    throw fail("INVALID_INPUT", "password must be at least 8 characters");
+  if (typeof password !== "string" || password.length < 8 || password.length > MAX_PASSWORD_LENGTH) {
+    throw fail("INVALID_INPUT", `password must be 8 to ${MAX_PASSWORD_LENGTH} characters`);
   }
   const cleanEmail = email.trim().toLowerCase();
   const passwordHash = await hashPassword(password);
