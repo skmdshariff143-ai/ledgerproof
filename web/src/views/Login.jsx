@@ -110,11 +110,11 @@ export function Login() {
           <h2>Welcome back</h2>
           <label>
             Email
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
+            <input name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
           </label>
           <label>
             Password
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+            <input name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
           </label>
           <button type="submit" className="primary-wide" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
           {error && <p className="error" role="alert"><strong>Could not sign in.</strong> {error}</p>}
@@ -127,11 +127,11 @@ export function Login() {
           <p className="muted small">New accounts start in PENDING_KYC status with ₹0.00 balance until approved by an Admin.</p>
           <label>
             Email
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
+            <input name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
           </label>
           <label>
             Password (min 8 chars)
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={8} required />
+            <input name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={8} required />
           </label>
           <button type="submit" className="primary-wide" disabled={busy}>{busy ? "Creating…" : "Create account (PENDING_KYC)"}</button>
           {error && <p className="error" role="alert"><strong>Could not register.</strong> {error}</p>}
@@ -144,15 +144,15 @@ export function Login() {
           <p className="muted small">Guarded by BOOTSTRAP_SECRET. Works only when zero admins exist in the database.</p>
           <label>
             Admin email
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@ledgerline.com" />
+            <input name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@ledgerline.com" />
           </label>
           <label>
             Admin password
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Admin@123" />
+            <input name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Admin@123" />
           </label>
           <label>
             Bootstrap secret
-            <input type="password" value={bootstrapSecret} onChange={(e) => setBootstrapSecret(e.target.value)} required />
+            <input name="bootstrapSecret" autoComplete="off" type="password" value={bootstrapSecret} onChange={(e) => setBootstrapSecret(e.target.value)} required />
           </label>
           <button type="submit" className="primary-wide" disabled={busy}>{busy ? "Working…" : "Initialize admin & vault"}</button>
           {error && <p className="error" role="alert"><strong>Could not bootstrap.</strong> {error}</p>}
