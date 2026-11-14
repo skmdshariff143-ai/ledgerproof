@@ -3,7 +3,7 @@
 Status: draft written for a hiring-challenge demo. It has not been reviewed by a lawyer and is not
 published on the site. The owner must review and approve it before it is linked from the app.
 
-1. **Demo only.** LedgerProof is a demonstration. Balances and transfers are not real money and
+1. **Demo only.** Balance Vault is a demonstration. Balances and transfers are not real money and
    create no claim against anyone.
 2. **Demo accounts.** The published demo logins are shared. Anything done with them is visible to
    other evaluators. Do not enter real personal or financial information.

@@ -1,6 +1,8 @@
-# LedgerProof (BalanceVault / LedgerLine)
+# Balance Vault
 
 Money movement with a ledger you can prove. Solo submission for the **Snovasys Fresher Hiring Challenge 2026 — VVIT**.
+
+**Naming:** the product's display name is Balance Vault. Earlier names still appear in technical identifiers and are kept on purpose: `ledgerproof` (the repository, the live URLs, the Vercel projects, the database role and package names) and LedgerLine (the demo email domain and the challenge's name for the project).
 
 ## Live
 

@@ -17,7 +17,7 @@ export default function App() {
   return (
     <>
       <header className="topbar">
-        <strong className="brand">LedgerProof</strong>
+        <strong className="brand">Balance Vault</strong>
         <span className="who">
           {user.email} <Badge value={user.role} />
         </span>

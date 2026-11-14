@@ -77,7 +77,7 @@ export function Login() {
   return (
     <main className="login">
       <header className="login-head">
-        <h1>LedgerProof</h1>
+        <h1>Balance Vault</h1>
         <p className="muted">Money movement with a ledger you can prove.</p>
       </header>
 

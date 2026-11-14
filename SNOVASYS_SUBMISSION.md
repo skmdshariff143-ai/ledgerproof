@@ -7,7 +7,7 @@ Below are the ready-to-paste answers for the 6 Snovasys Hiring Challenge submiss
 
 ### Q1. What did you build?
 
-I built **LedgerProof**, a full-stack double-entry banking ledger, KYC onboarding workflow, and cryptographically verifiable audit trail with defense-in-depth across the **Node.js API** and **PostgreSQL**:
+I built **Balance Vault** (the repository, URLs and database objects are still named `ledgerproof`), a full-stack double-entry banking ledger, KYC onboarding workflow, and cryptographically verifiable audit trail with defense-in-depth across the **Node.js API** and **PostgreSQL**:
 - **Enforced in the Node.js API (backed by immutable DB columns and role grants):** HS256 JWT authentication and token revocation (`authenticate()`), route-level RBAC (`allowRoles()`), source-account ownership verification (`requireOwnAccount()`), and deterministic ascending-UUID lock ordering (`lockAccounts()`).
 - **Enforced in both the Node.js API and PostgreSQL triggers/constraints/grants:** double-entry conservation (`SUM(debit) == SUM(credit)` via `transfer()` and deferred trigger `check_transaction_balanced()`), non-negative user balances (`user_balance_not_negative` and `apply_ledger_entry()`), active-account status checks (`transfer()` and `apply_ledger_entry()`), per-user idempotency (`idempotency_keys (user_id, key)`), append-only history (`prevent_ledger_mutation`, `prevent_audit_mutation`, `reject_change`), SHA-256 hash-chained audit logging (`chain_audit_log()`), and least-privilege runtime DB execution (`ledgerproof_app`).
 

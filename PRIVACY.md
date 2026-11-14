@@ -4,7 +4,7 @@ Status: draft written for a hiring-challenge demo. It has not been reviewed by a
 published on the site. The owner must review it, name a contact, and decide the open points at the
 end before it is linked from the app.
 
-LedgerProof is a demonstration ledger. It moves no real money. Do not enter real personal or
+Balance Vault is a demonstration ledger. It moves no real money. Do not enter real personal or
 financial information.
 
 ## What the app stores
