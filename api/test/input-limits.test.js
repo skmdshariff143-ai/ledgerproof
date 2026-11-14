@@ -69,3 +69,14 @@ test("THREAT oversized account id in a money request: refused, and the value is 
   const recorded = await pool.query("SELECT count(*)::int AS n FROM audit_log WHERE action IN ('withdraw','deposit') AND outcome = 'error'");
   assert.ok(recorded.rows[0].n >= 4, "the failed attempts are still audited");
 });
+
+test("THREAT login and registration flood: the 121st request in a minute is refused with 429 and the first 120 are not", async () => {
+  const statuses = [];
+  for (let i = 0; i < 122; i++) {
+    // An empty body is refused by validation, so this exercises the limiter without hashing a password.
+    const path = i % 2 === 0 ? "/api/auth/login" : "/api/auth/register";
+    statuses.push((await call("POST", path, { body: {} })).status);
+  }
+  assert.ok(statuses.slice(0, 120).every((s) => s === 400), "the first 120 requests reach validation");
+  assert.deepEqual(statuses.slice(120), [429, 429], "the 121st and 122nd are rate limited, across login and register together");
+});
