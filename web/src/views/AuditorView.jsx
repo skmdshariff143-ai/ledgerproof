@@ -36,6 +36,7 @@ function LedgerExplorer() {
       <Loaded state={state}>
         {({ entries }) => (
           <DataTable
+            label="Double-entry ledger entries"
             rows={entries.filter((e) => (direction === "all" || e.direction === direction) && (type === "all" || e.type === type))}
             rowKey={(e) => e.id}
             empty="No entries match."
@@ -44,7 +45,7 @@ function LedgerExplorer() {
               { label: "Account", render: (e) => <code>{e.account_number}</code> },
               { label: "Type", render: (e) => e.type },
               { label: "Entry", render: (e) => <Badge value={e.direction} /> },
-              { label: "Amount", align: "num", render: (e) => `${signed(e.direction)}${formatRupees(e.amount_paise)}` },
+              { label: "Amount", align: "num", render: (e) => <strong className={`amount amount-${e.direction}`}>{signed(e.direction)}{formatRupees(e.amount_paise)}</strong> },
               { label: "Balance after", align: "num", render: (e) => formatRupees(e.running_balance_paise) },
               { label: "Initiated by", render: (e) => e.initiated_by },
               { label: "Reference", render: (e) => <code className="ref" title={e.transaction_id}>{shortId(e.transaction_id)}</code> },
@@ -69,7 +70,7 @@ function AuditLog() {
           <FilterSelect label="Outcome" value={outcome} onChange={setOutcome} options={["all", "success", "denied", "error"]} />
           <label className="filter">
             Search
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="action, target, role…" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="action, target, role" />
           </label>
           <button type="button" className="secondary" onClick={state.reload}>Refresh</button>
         </div>
@@ -78,6 +79,7 @@ function AuditLog() {
       <Loaded state={state}>
         {({ entries }) => (
           <DataTable
+            label="Security audit log entries"
             rows={entries.filter(
               (e) =>
                 (outcome === "all" || e.outcome === outcome) &&

@@ -2,11 +2,12 @@
 export function Loaded({ state, children }) {
   if (state.error) {
     return (
-      <p className="error" role="alert">
-        {state.error} <button type="button" className="link" onClick={state.reload}>Retry</button>
-      </p>
+      <div className="error-row" role="alert">
+        <p className="error"><strong>Could not load.</strong> {state.error}</p>
+        <button type="button" className="secondary" onClick={state.reload}>Try again</button>
+      </div>
     );
   }
-  if (!state.data) return <p className="muted">Loading…</p>;
+  if (!state.data) return <p className="muted" role="status">Loading…</p>;
   return children(state.data);
 }

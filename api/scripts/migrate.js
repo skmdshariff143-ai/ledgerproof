@@ -124,6 +124,9 @@ DECLARE
   iso_ts text;
 BEGIN
   PERFORM pg_advisory_xact_lock(20261110);
+  -- The default id was taken before this lock, so two inserts at the same moment could get ids in one
+  -- order and chain in the other. Taking the id again here makes id order equal chain order.
+  NEW.id := nextval('audit_log_id_seq');
   SELECT entry_hash INTO prev FROM audit_log ORDER BY id DESC LIMIT 1 FOR UPDATE;
   NEW.previous_hash := COALESCE(prev, 'GENESIS_LEDGERPROOF_2026');
   iso_ts := to_char(NEW.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');

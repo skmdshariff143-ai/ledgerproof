@@ -30,78 +30,75 @@ export function HolderView() {
   };
 
   return (
-    <>
-      <Loaded state={accounts}>
-        {() =>
-          account ? (
-            <>
-              <Section
-                title="Your account"
-                actions={
-                  list.length > 1 && (
-                    <select aria-label="Choose account" value={account.id} onChange={(e) => setSelectedId(e.target.value)}>
+    <Loaded state={accounts}>
+      {() =>
+        account ? (
+          <>
+            <section className="card balance-card" aria-labelledby="balance-title">
+              <div>
+                <h2 id="balance-title" className="label-title">Available balance</h2>
+                <p className="balance money">{formatRupees(account.balance_paise)}</p>
+              </div>
+              <div className="balance-meta">
+                <p className="label-title">Account number</p>
+                <p><code>{account.account_number}</code> <Badge value={account.status} /></p>
+                {list.length > 1 && (
+                  <label className="filter">
+                    Switch account
+                    <select value={account.id} onChange={(e) => setSelectedId(e.target.value)}>
                       {list.map((a) => (
                         <option key={a.id} value={a.id}>{a.account_number}</option>
                       ))}
                     </select>
-                  )
-                }
-              >
-                <div className="balance-card">
-                  <div>
-                    <p className="muted small">Available balance</p>
-                    <p className="balance money">{formatRupees(account.balance_paise)}</p>
-                  </div>
-                  <div>
-                    <p className="muted small">Account number</p>
-                    <p><code>{account.account_number}</code> <Badge value={account.status} /></p>
-                  </div>
-                </div>
-                {account.status?.toLowerCase() === "pending_kyc" && (
-                  <p className="error" role="status">
-                    KYC Status: PENDING_KYC — Your account is awaiting Admin onboarding approval. You cannot send or receive funds until approved.
-                  </p>
+                  </label>
                 )}
-                {account.status?.toLowerCase() === "frozen" && (
-                  <p className="error" role="status">This account is frozen. Money cannot move until an admin unfreezes it.</p>
-                )}
-              </Section>
-
-              <div className="two-col">
-                <Section title="Withdraw">
-                  <MoneyForm
-                    submitLabel="Withdraw"
-                    fields={[{ name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" }]}
-                    buildRequest={(v) => ({ path: "/api/transactions/withdraw", body: { fromAccountId: account.id, amountPaise: amountPaise(v.amount) } })}
-                    onDone={refresh}
-                  />
-                </Section>
-                <Section title="Transfer">
-                  <MoneyForm
-                    submitLabel="Transfer"
-                    fields={[
-                      { name: "to", label: "Recipient account number", placeholder: "LP0000000002" },
-                      { name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" },
-                    ]}
-                    buildRequest={(v) => ({
-                      path: "/api/transactions/transfer",
-                      body: { fromAccountId: account.id, toAccountNumber: v.to.trim().toUpperCase(), amountPaise: amountPaise(v.amount) },
-                    })}
-                    onDone={refresh}
-                  />
-                </Section>
               </div>
+              {account.status?.toLowerCase() === "pending_kyc" && (
+                <p className="callout callout-warn" role="status">
+                  <strong>KYC pending.</strong> Your account is awaiting Admin onboarding approval. You cannot send or receive funds until approved.
+                </p>
+              )}
+              {account.status?.toLowerCase() === "frozen" && (
+                <p className="callout callout-bad" role="status">
+                  <strong>Account frozen.</strong> Money cannot move until an admin unfreezes it.
+                </p>
+              )}
+            </section>
 
-              <Statement state={statement} />
-            </>
-          ) : (
-            <Section title="Your account">
-              <p className="muted">You do not have an account yet. Ask an admin to create one.</p>
-            </Section>
-          )
-        }
-      </Loaded>
-    </>
+            <div className="two-col">
+              <Section title="Transfer">
+                <MoneyForm
+                  submitLabel="Send transfer"
+                  fields={[
+                    { name: "to", label: "Recipient account number", placeholder: "LP0000000002" },
+                    { name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" },
+                  ]}
+                  buildRequest={(v) => ({
+                    path: "/api/transactions/transfer",
+                    body: { fromAccountId: account.id, toAccountNumber: v.to.trim().toUpperCase(), amountPaise: amountPaise(v.amount) },
+                  })}
+                  onDone={refresh}
+                />
+              </Section>
+              <Section title="Withdraw">
+                <MoneyForm
+                  submitLabel="Withdraw"
+                  fields={[{ name: "amount", label: "Amount (₹)", placeholder: "100.50", inputMode: "decimal" }]}
+                  buildRequest={(v) => ({ path: "/api/transactions/withdraw", body: { fromAccountId: account.id, amountPaise: amountPaise(v.amount) } })}
+                  onDone={refresh}
+                />
+              </Section>
+            </div>
+
+            <Statement state={statement} />
+          </>
+        ) : (
+          <Section title="Your account">
+            <p className="empty">You do not have an account yet. Ask an admin to create one.</p>
+          </Section>
+        )
+      }
+    </Loaded>
   );
 }
 
@@ -110,7 +107,7 @@ function Statement({ state }) {
   const [type, setType] = useState("all");
   return (
     <Section
-      title="Statement (double-entry)"
+      title="Recent activity"
       actions={
         <div className="filters">
           <FilterSelect label="Entry" value={direction} onChange={setDirection} options={["all", "debit", "credit"]} />
@@ -118,9 +115,12 @@ function Statement({ state }) {
         </div>
       }
     >
+      <p className="muted small">Double-entry statement, newest first. Credits add to your balance (+), debits take from it (−).</p>
       <Loaded state={state}>
         {({ entries }) => (
           <DataTable
+            label="Account statement"
+            stack
             rows={[...entries].reverse().filter((e) => (direction === "all" || e.direction === direction) && (type === "all" || e.type === type))}
             rowKey={(e) => e.id}
             empty="No entries match."
@@ -128,7 +128,7 @@ function Statement({ state }) {
               { label: "Time", render: (e) => formatTime(e.created_at) },
               { label: "Type", render: (e) => e.type },
               { label: "Entry", render: (e) => <Badge value={e.direction} /> },
-              { label: "Amount", align: "num", render: (e) => `${signed(e.direction)}${formatRupees(e.amount_paise)}` },
+              { label: "Amount", align: "num", render: (e) => <strong className={`amount amount-${e.direction}`}>{signed(e.direction)}{formatRupees(e.amount_paise)}</strong> },
               { label: "Balance after", align: "num", render: (e) => formatRupees(e.running_balance_paise) },
               { label: "Reference", render: (e) => <code className="ref" title={e.transaction_id}>{shortId(e.transaction_id)}</code> },
             ]}

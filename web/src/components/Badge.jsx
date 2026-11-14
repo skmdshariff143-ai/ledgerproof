@@ -1,7 +1,7 @@
 const TONES = {
-  success: "ok", active: "ok", credit: "ok", verified: "ok",
-  denied: "bad", debit: "bad", rejected: "bad", tampered: "bad",
-  error: "warn", frozen: "warn", pending_kyc: "warn",
+  success: "ok", active: "ok", credit: "ok", verified: "ok", balanced: "ok",
+  denied: "bad", debit: "bad", rejected: "bad", tampered: "bad", not_balanced: "bad",
+  error: "warn", frozen: "warn", pending_kyc: "warn", check_failed: "warn",
 };
 
 // Small colored label; the text always says what it means, color is only a hint.
