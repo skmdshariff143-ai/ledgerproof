@@ -1,8 +1,10 @@
 import { useId, useState } from "react";
 import { shortId } from "../format.js";
+import { fingerprint, isAmbiguous, keyFor } from "../idempotency.js";
 import { useSession } from "../session.jsx";
 
-// A form that moves money. Each submit carries a fresh Idempotency-Key (UUID v4). With
+// A form that moves money. Each new payment carries a fresh Idempotency-Key (UUID v4); a retry of a payment
+// whose answer never arrived reuses its key (see idempotency.js), so it can only be paid once. With
 // "Simulate network retry" on, the same request is sent twice at once with the same key,
 // so you can watch the server pay once and answer the second call as a replay.
 // `buildRequest(values)` returns { path, body } or throws an Error whose message is shown.
@@ -13,13 +15,14 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
   const [values, setValues] = useState(blank);
   const [simulateDuplicate, setSimulateDuplicate] = useState(false);
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [unanswered, setUnanswered] = useState(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState(null);
   const [outcome, setOutcome] = useState(null);
 
-  async function send({ path, body }) {
+  async function send({ path, body }, key) {
     try {
-      const { data, status, replayed } = await call("POST", path, { body, idempotencyKey });
+      const { data, status, replayed } = await call("POST", path, { body, idempotencyKey: key });
       return { ok: true, status, replayed, transactionId: data.transactionId };
     } catch (err) {
       return { ok: false, status: err.status, code: err.code, message: err.message };
@@ -37,10 +40,13 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
       setFormError(err.message);
       return;
     }
+    const key = keyFor(unanswered, request, idempotencyKey);
     setBusy(true);
-    const attempts = await Promise.all(simulateDuplicate ? [send(request), send(request)] : [send(request)]);
+    const attempts = await Promise.all(simulateDuplicate ? [send(request, key), send(request, key)] : [send(request, key)]);
     setBusy(false);
-    setOutcome({ key: idempotencyKey, attempts });
+    const ambiguous = isAmbiguous(attempts);
+    setUnanswered(ambiguous ? { fingerprint: fingerprint(request), key } : null);
+    setOutcome({ key, attempts, ambiguous });
     setIdempotencyKey(crypto.randomUUID());
     if (attempts.some((a) => a.ok)) {
       setValues(blank);
@@ -122,6 +128,12 @@ export function MoneyForm({ submitLabel, fields, buildRequest, onDone }) {
                 )}
               </li>
             ))}
+            {outcome.ambiguous && (
+              <li className="attempt-bad">
+                <strong>The result is unknown.</strong> The payment may have gone through. Sending the same request again
+                reuses the same Idempotency-Key, so it can be paid only once. Check your activity before changing the amount.
+              </li>
+            )}
             {sameTransaction && (
               <li className="attempt-ok"><strong>Both requests returned the same transaction: money moved once.</strong></li>
             )}
